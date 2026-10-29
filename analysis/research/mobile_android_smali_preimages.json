@@ -1,0 +1,17 @@
+{
+  "apk_decoded/smali/com/oculus/systemutils/SystemActivitiesReceiver.smali": "852989cdc4d8e4e2403448c3ab40734bae32ce8dc5af44b6bfc6e941770862c6",
+  "apk_decoded/smali/com/google/android/vending/expansion/downloader/h/e.smali": "882d63a36defd1e769ecc74d988830c222f2028a187ef7265d20ebc5cf366bae",
+  "apk_decoded/smali/com/google/android/gms/common/GoogleApiAvailability.smali": "73a9092721e0a8713d54ef636819913e8392bac6906faaa6e4b47845edd3c179",
+  "apk_decoded/smali/com/google/android/gms/common/zzf.smali": "54adfd2b3806e614f3a2e6e5ee04037a50a6844f0cac3cb9a13bb9481fbea3a4",
+  "apk_decoded/smali/com/google/android/gms/internal/zzavx.smali": "598faaa24dbad1a6d15e7d42bba727e6cbe122f84c65dcf6d12904a308b94ec8",
+  "apk_decoded/smali/com/google/android/gms/common/api/GoogleApiActivity.smali": "2b4f46323469565c32a515b82db893ba7a30f97e6e59f1961c61e652a38bde39",
+  "apk_decoded/smali/com/google/android/gms/common/util/zzj.smali": "7c68d17bbc9496b42d078334078675c525b71cf132aff2140fafa95caaf87a59",
+  "apk_decoded/smali/com/google/android/gms/common/api/internal/x0.smali": "88339a48b8decbb97ba6c0cbb875e2427c94258e86ffaea5c280e0335acb6128",
+  "apk_decoded/smali/com/google/android/gms/common/api/internal/zzbm.smali": "181f1fd5bf62eee75f5fec5860f61aee7c37df35ad95f941ca7ae57db89916ad",
+  "apk_decoded/smali/com/epicgames/ue4/BatteryReceiver.smali": "7db2ffc38552f55b14a51d96e614bc8248daccd33f4d0fd8068f16ce5f07baa4",
+  "apk_decoded/smali/com/epicgames/ue4/GameActivity.smali": "668fc4f77ba66291c763aa1d49d8263cc42b8a552bfe8d9c13c60ec9052d16c8",
+  "apk_decoded/smali/com/epicgames/ue4/HeadsetReceiver.smali": "96c457eb4b04b55f45ac05d52d73f6af452760cc78c2a685984e2280f960ed39",
+  "apk_decoded/smali/com/epicgames/ue4/LocalNotificationReceiver.smali": "9dd9ccc7f419d9f32c8d1c902a0de815943b1e3eb1d2572a534d59c03f92ac64",
+  "apk_decoded/smali/com/epicgames/ue4/VolumeReceiver.smali": "ca161482711c5098b4a8cbc74d2b0667b425ede44da545a14babf9e7a82e546c",
+  "apk_decoded/smali/com/Armature/VR4/DownloaderActivity.smali": "9d6535c9de102b12b9a9aa6cd4b48d9333eed704b56bfa3aace1c88b97e94b2d"
+}

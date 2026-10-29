@@ -1,0 +1,142 @@
+{
+  "classes": 3117,
+  "roots": 2925,
+  "native_jni_roots": [
+    "com/epicgames/ue4/BatteryReceiver",
+    "com/epicgames/ue4/GameActivity",
+    "com/epicgames/ue4/GameActivity$InputDeviceInfo",
+    "com/epicgames/ue4/GameActivity$LaunchNotification",
+    "com/epicgames/ue4/HeadsetReceiver",
+    "com/epicgames/ue4/MediaPlayer14",
+    "com/epicgames/ue4/MediaPlayer14$AudioTrackInfo",
+    "com/epicgames/ue4/MediaPlayer14$CaptionTrackInfo",
+    "com/epicgames/ue4/MediaPlayer14$FrameUpdateInfo",
+    "com/epicgames/ue4/MediaPlayer14$VideoTrackInfo",
+    "com/epicgames/ue4/MessageBox01",
+    "com/epicgames/ue4/VolumeReceiver",
+    "com/google/vr/sdk/samples/permission/PermissionHelper"
+  ],
+  "dynamic_call_owners": [
+    "com/oculus/vrapi/loader/AppLoader",
+    "com/google/vr/sdk/samples/permission/PermissionHelper",
+    "com/google/android/gms/dynamic/zzp",
+    "com/google/android/gms/dynamite/DynamiteModule",
+    "com/google/android/gms/dynamite/h",
+    "com/google/android/gms/internal/ib",
+    "com/google/android/gms/internal/la",
+    "com/google/android/gms/internal/ta",
+    "com/google/android/gms/internal/v9",
+    "com/google/android/gms/internal/xb",
+    "com/google/android/gms/internal/y9",
+    "com/google/android/gms/internal/za",
+    "com/google/android/gms/internal/zzbeu",
+    "com/google/android/gms/internal/zzbhd",
+    "com/google/android/gms/internal/zzdvl",
+    "com/google/android/gms/internal/zzfes",
+    "com/google/android/gms/internal/zzffm",
+    "com/google/android/gms/internal/zzffz",
+    "com/google/android/gms/internal/zzfjq",
+    "com/google/android/gms/plus/PlusOneDummyView$b",
+    "com/google/android/gms/plus/PlusOneDummyView$c",
+    "com/google/android/gms/security/ProviderInstaller",
+    "com/google/android/gms/nearby/connection/AppIdentifier",
+    "com/google/android/gms/common/internal/zzca",
+    "com/google/android/gms/common/internal/zzd",
+    "com/google/android/gms/common/internal/zzu",
+    "com/google/android/gms/common/api/internal/zzbz",
+    "com/epicgames/ue4/GameActivity",
+    "com/epicgames/ue4/LocalNotificationReceiver",
+    "com/epicgames/ue4/MulticastBroadcastReceiver",
+    "android/support/v4/app/Fragment",
+    "android/support/v4/app/p",
+    "android/arch/lifecycle/j"
+  ],
+  "preserved_dynamic_subsystems": [
+    "com/google/android/gms/",
+    "com/google/vr/",
+    "com/oculus/",
+    "android/support/",
+    "android/arch/"
+  ],
+  "reachable": 3088,
+  "unreachable_candidates": [
+    "com/android/vending/billing/util/Base64",
+    "com/android/vending/billing/util/Base64DecoderException",
+    "com/epicgames/ue4/AudioDecoder",
+    "com/epicgames/ue4/VideoDecoder",
+    "com/epicgames/ue4/VideoDecoder$FrameUpdateInfo",
+    "com/epicgames/ue4/VideoDecoder$a",
+    "com/epicgames/ue4/VideoDecoder$b",
+    "com/epicgames/ue4/WebViewControl",
+    "com/epicgames/ue4/WebViewControl$ChromeClient",
+    "com/epicgames/ue4/WebViewControl$FrameUpdateInfo",
+    "com/epicgames/ue4/WebViewControl$ViewClient",
+    "com/epicgames/ue4/WebViewControl$a",
+    "com/epicgames/ue4/WebViewControl$b",
+    "com/epicgames/ue4/WebViewControl$c",
+    "com/epicgames/ue4/WebViewControl$d",
+    "com/epicgames/ue4/WebViewControl$e",
+    "com/epicgames/ue4/WebViewControl$f",
+    "com/epicgames/ue4/WebViewControl$g",
+    "com/epicgames/ue4/WebViewControl$h",
+    "com/epicgames/ue4/WebViewControl$i",
+    "com/epicgames/ue4/WebViewControl$j",
+    "com/epicgames/ue4/WebViewControl$k",
+    "com/epicgames/ue4/WebViewControl$l",
+    "com/epicgames/ue4/WebViewControl$m",
+    "com/epicgames/ue4/WebViewControl$n",
+    "com/epicgames/ue4/WebViewControl$o",
+    "com/epicgames/ue4/WebViewControl$o$a",
+    "com/epicgames/ue4/WebViewControl$p",
+    "com/epicgames/ue4/f"
+  ],
+  "class_deletion": false,
+  "resources": "All existing public IDs retained; runtime getIdentifier families and preserved SDK roots kept.",
+  "unknown_metadata": [
+    {
+      "path": "apk_decoded/unknown/build-data.properties",
+      "bytes": 157,
+      "sha256": "0d3f70d64db5ad0316317132bd148f7c27c072a8959503edc729335f96895c7a",
+      "classification": "build-only GWT/annotation/compiler provenance; no runtime Java resource reader",
+      "decision": "remove from built APK only"
+    },
+    {
+      "path": "apk_decoded/unknown/error_prone/Annotations.gwt.xml",
+      "bytes": 119,
+      "sha256": "c118a3de9a4be1f5fa7bb5dc422d8367dd4765ded5d95c2f57419a3862a91bee",
+      "classification": "build-only GWT/annotation/compiler provenance; no runtime Java resource reader",
+      "decision": "remove from built APK only"
+    },
+    {
+      "path": "apk_decoded/unknown/jsr305_annotations/Jsr305_annotations.gwt.xml",
+      "bytes": 133,
+      "sha256": "0215a446bddde28ed59ae7122f8f59472d4be649ac7b92d5f56488407b364f39",
+      "classification": "build-only GWT/annotation/compiler provenance; no runtime Java resource reader",
+      "decision": "remove from built APK only"
+    },
+    {
+      "path": "apk_decoded/unknown/third_party/java_src/error_prone/project/annotations/Annotations.gwt.xml",
+      "bytes": 375,
+      "sha256": "556654ac1c3205518de7845cb33d7f88475b6825744cde2d541d8f1576607408",
+      "classification": "build-only GWT/annotation/compiler provenance; no runtime Java resource reader",
+      "decision": "remove from built APK only"
+    },
+    {
+      "path": "apk_decoded/unknown/third_party/java_src/error_prone/project/annotations/Google_internal.gwt.xml",
+      "bytes": 213,
+      "sha256": "d084c3251406df8e3d78429fc429c0a6b9e9a75dc5cae1676f6ed4001bb6e117",
+      "classification": "build-only GWT/annotation/compiler provenance; no runtime Java resource reader",
+      "decision": "remove from built APK only"
+    }
+  ],
+  "permissions": {
+    "INTERNET": "retained downloader/Oculus/GMS/native socket paths",
+    "ACCESS_NETWORK_STATE": "retained downloader/SDK connectivity checks",
+    "READ_EXTERNAL_STORAGE": "maxSdk28; legacy external OBB only, unnecessary modern app-specific paths",
+    "WRITE_EXTERNAL_STORAGE": "maxSdk28; legacy external OBB only, unnecessary modern app-specific paths"
+  },
+  "features": {
+    "VR headtracking": "removed",
+    "USB host": "optional, touch route does not require USB"
+  }
+}
