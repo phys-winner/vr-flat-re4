@@ -42,7 +42,8 @@ static void install_touch_flat_controls(uintptr_t base) {
         || *(const unsigned*)(base+0x9db55e0+36)!=0x4f
         || *(const unsigned*)(base+0x9db56e8+36)!=0x4b
         || *(const unsigned*)(base+0x9db5950+36)!=0x3e
-        || *(const unsigned*)(base+0x9db57a8+36)!=0x49)return;
+        || *(const unsigned*)(base+0x9db57a8+36)!=0x49
+        || *(const unsigned*)(base+0x9db5a10+36)!=0x3c)return;
     for(unsigned i=0;i<3;i++)if(*(const int64_t*)(base+0x9d5e8e8+i*16+8)!=i)return;
     for(unsigned i=0;i<4;i++)if(*(const int64_t*)(base+0x9d65b30+i*16+8)!=i)return;
     for(unsigned i=0;i<4;i++)if(*(const int64_t*)(base+0x9d58690+i*16+8)!=i)return;
@@ -58,8 +59,9 @@ static void touch_flat_controls_tick(void) {
     const unsigned char* source=qs_settings();
     if(!source || (source[0]!=0 && source[0]!=15 && source[0]!=30 && source[0]!=45 && source[0]!=90)
         || source[8]>1 || source[0x33]>1 || source[0x34]>1 || source[0x3e]>1
-        || source[0x48]>2 || source[0x49]>1 || source[0x4a]>1
+        || source[0x3c]>1 || source[0x48]>2 || source[0x49]>1 || source[0x4a]>1
         || source[0x4b]>2 || source[0x4f]>2 || source[0x90]>1)return;
+    __atomic_store_n(&g_watch_side,source[0x3c],__ATOMIC_RELEASE);
     if(!flat_defaults_state)flat_defaults_state=access(flat_defaults_path,F_OK)==0 ? 2 : 1;
     int defaults=flat_defaults_state==1 && source[0x31]<=3 && source[0x3a]<=1;
     // ActionTransitionMode (0x4a) is the player's choice in the options menu; it is validated above, not forced.
@@ -93,4 +95,17 @@ static void touch_flat_controls_tick(void) {
     }
     if(flat_controls_logs<8){++flat_controls_logs;LOGF("FLAT controls applied native VR settings pawn=%p type=%u",pawn,type);}
 }
+#ifdef RE4_QA_USER_TRANSITIONS
+static int touch_flat_controls_qa_watch(int side) {
+    if((unsigned)side>1 || !flat_controls_ready || !qs_ready || !qs_settings || !qs_copy || !qs_set || !qs_destroy
+        || !cinema_on_game_thread() || !cinema_type || cinema_type()!=1 || !cinema_active || !comfort_player_class
+        || !cinema_object(cinema_active(),comfort_player_class(),0x570))return 0;
+    const unsigned char* source=qs_settings();
+    if(!source || source[0x3c]>1)return 0;
+    if(source[0x3c]==side)return 1;
+    struct __attribute__((aligned(16))) {unsigned char bytes[0xb8];} copy;
+    qs_copy(&copy,source);copy.bytes[0x3c]=(unsigned char)side;qs_set(&copy);qs_destroy(&copy);
+    return 1;
+}
+#endif
 #endif

@@ -25,7 +25,7 @@ assert enum(0x9d5dbf8,3)==[('EFirstPersonFacingMode::MaintainCurrent',0),('EFirs
 for address,offset,name in ((0x9db6000,0,'AvatarTurnMode'),(0x9db5808,0x48,'MovementMode'),
                            (0x9db5748,0x4a,'ActionsTransitionMode'),(0x9db5c58,0x33,'MovementStick'),
                            (0x9db55e0,0x4f,'SteeringMethod'),(0x9db56e8,0x4b,'BoatControlMode'),
-                           (0x9db5950,0x3e,'CombatStyle'),(0x9db57a8,0x49,'FirstPersonFacing')):
+                           (0x9db5950,0x3e,'CombatStyle'),(0x9db57a8,0x49,'FirstPersonFacing'),(0x9db5a10,0x3c,'WatchHand')):
     assert struct.unpack_from('<I',native,address+36)[0]==offset and string(rela[address])==name
 for lo,hi,digest in (
     (0x65e7b0c,0x65e7b60,'050cf6bf16f1e82ed7208076ada740fbd85e910f617816a9058f043af171f2da'),
@@ -52,6 +52,45 @@ assert rela[0x9e20df8+0x88]==0x65eec38 and rela[0x9e20df8+0xa0]==0x65e7b0c
 assert struct.unpack_from('<I',native,0x65eecb0)[0]==0xb9401816 # original float cvar flags +18
 print('PASS:19 native ranges, named flat-control enums and reflected offsets; original float Set/Get ABI and deep Settings ownership',flush=True)
 
+# The original float setter must establish Code ownership even for an unchanged zero.
+from unicorn import Uc,UC_ARCH_ARM64,UC_MODE_ARM,UC_HOOK_CODE
+from unicorn.arm64_const import UC_ARM64_REG_X0,UC_ARM64_REG_X1,UC_ARM64_REG_X2,UC_ARM64_REG_X30,UC_ARM64_REG_SP,UC_ARM64_REG_PC,UC_ARM64_REG_S0,UC_ARM64_REG_TPIDR_EL0
+u=Uc(UC_ARCH_ARM64,UC_MODE_ARM)
+for page in (0x65e7000,0x65ee000,0x65e4000,0xa351000,0xa352000,0xa6b1000,0xa6eb000,0x9bf2000):
+    u.mem_map(page,4096);u.mem_write(page,native[page:page+4096])
+for p,n in ((0x40000000,0x20000),(0x50000000,4096),(0x60000000,4096),(0x70000000,4096)):u.mem_map(p,n)
+u.reg_write(UC_ARM64_REG_TPIDR_EL0,0x60000000)
+for address in (0xa351ba0,0xa352000,0xa352008):u.mem_write(address,struct.pack('<Q',rela[address]))
+variable,literal,manager=0x50000400,0x50000800,0x50000100
+u.mem_write(0xa6b1ac0,struct.pack('<Q',manager));u.mem_write(0xa6eb068,b'\1');u.mem_write(0xa6eb058,struct.pack('<I',123))
+events=[]
+def float_hook(uc,address,size,user):
+    if address==0x9bf2ee0:
+        uc.reg_write(UC_ARM64_REG_X0,123);uc.reg_write(UC_ARM64_REG_PC,uc.reg_read(UC_ARM64_REG_X30))
+    elif address==0x65e43f8:
+        raw=bytes(uc.mem_read(uc.reg_read(UC_ARM64_REG_X0),16)).decode('utf-16-le').split('\0',1)[0]
+        assert raw in ('0','60');events.append('parse')
+        uc.reg_write(UC_ARM64_REG_S0,struct.unpack('<I',struct.pack('<f',float(raw)))[0]);uc.reg_write(UC_ARM64_REG_PC,uc.reg_read(UC_ARM64_REG_X30))
+    elif address==0x65eec94:events.append('native-notify')
+    elif address==0x65e7d54:
+        # Skip only denied-write diagnostic formatting; the original priority comparison/return still executes.
+        uc.reg_write(UC_ARM64_REG_PC,0x65e7e54)
+u.hook_add(UC_HOOK_CODE,float_hook)
+def native_float_set(text,priority):
+    u.mem_write(literal,text.encode('utf-16-le')+bytes(16-len(text)*2));events.clear()
+    for reg,value in ((UC_ARM64_REG_X0,variable),(UC_ARM64_REG_X1,literal),(UC_ARM64_REG_X2,priority),(UC_ARM64_REG_SP,0x40010000),(UC_ARM64_REG_X30,0x70000000)):u.reg_write(reg,value)
+    u.emu_start(0x65eec38,0x70000000,count=10000);assert u.reg_read(UC_ARM64_REG_PC)==0x70000000
+for priority in range(8):
+    data=bytearray(0x40);struct.pack_into('<I',data,0x18,priority<<24);u.mem_write(variable,bytes(data))
+    native_float_set('0',0x08000000);promoted=bytes(u.mem_read(variable,0x40));expected=bytearray(data);struct.pack_into('<I',expected,0x18,0x08000000)
+    assert promoted==expected and struct.unpack_from('<ff',promoted,0x34)==(0,0) and events==['parse','native-notify']
+    for weaker in range(8):
+        native_float_set('60',weaker<<24);assert bytes(u.mem_read(variable,0x40))==promoted and not events
+    native_float_set('60',0x08000000);assert struct.unpack('<ff',u.mem_read(variable+0x34,8))==(60,60) and events==['parse','native-notify']
+assert hashlib.sha256(native[0x88a2c50:0x88a2c74]).hexdigest()=='1f6d2dd718e5dcaf5de3eaf28ec8949676eb59acf69ed761921720899eed02f0'
+assert struct.unpack_from('<I',native,0x8c0d4d8)[0]==0x12081c08 # SetMaxFPS reuses current priority.
+print('PASS: original ARM64 float setter/CanChange/OnChanged: unchanged0 promotes priorities0..7 toCode08, both GT/nonGT slots stay0, all64 later weakerwrites refused; equalCode writer remains allowed, native GameUserSettings SetMaxFPS priority reuse preserved',flush=True)
+
 clang=Path(os.path.join(os.environ['ANDROID_SDK_ROOT'], 'ndk/27.2.12479018/toolchains/llvm/prebuilt/windows-x86_64/bin/clang.exe'))
 vc=Path(r'C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231')
 sdk=Path(r'C:\Program Files (x86)\Windows Kits\10')
@@ -70,7 +109,7 @@ with tempfile.TemporaryDirectory(prefix='re4-mobile-settings-') as temporary:
         prefix+=f'void fixture_{kind}_image(unsigned char* p){{\n'
         for a,x,y in checks:prefix+=f'*(unsigned*)(p+{a})={x};*(unsigned*)(p+{a}+4)={y};\n'
         if kind=='flat':
-            for a,v in ((0x9db6000,0),(0x9db5808,0x48),(0x9db5748,0x4a),(0x9db5c58,0x33),(0x9db55e0,0x4f),(0x9db56e8,0x4b),(0x9db5950,0x3e),(0x9db57a8,0x49)):
+            for a,v in ((0x9db6000,0),(0x9db5808,0x48),(0x9db5748,0x4a),(0x9db5c58,0x33),(0x9db55e0,0x4f),(0x9db56e8,0x4b),(0x9db5950,0x3e),(0x9db57a8,0x49),(0x9db5a10,0x3c)):
                 prefix+=f'*(unsigned*)(p+{a}+36)={v};\n'
             for a,n in ((0x9d5e8e8,3),(0x9d65b30,4),(0x9d58690,4),(0x9d5a2b0,3),(0x9d5dbf8,3)):
                 for i in range(n):prefix+=f'*(int64_t*)(p+{a}+{i*16+8})={i};\n'

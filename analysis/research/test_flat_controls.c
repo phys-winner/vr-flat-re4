@@ -10,6 +10,7 @@ static int cinema_object(const void*,const void*,int);
 static unsigned char pawn[0x600],cls[0x60],settings[0xb8],original[0xb8];
 static void* chain[1];static int on_gt=1,qs_ready=1,copies,sets,destroys,logs;
 static unsigned context=1;
+static volatile int g_watch_side;
 static int cinema_on_game_thread(void){return on_gt;}
 static unsigned get_type(void){return context;}
 static void* get_active(void){return pawn;}
@@ -45,6 +46,7 @@ static int fixture_access(const char* path,int mode){(void)path;(void)mode;retur
 #define open fixture_open
 #define write fixture_write
 #define close fixture_close
+#define RE4_QA_USER_TRANSITIONS 1
 #include "re4fix_flat_controls.h"
 #undef access
 #undef open
@@ -57,14 +59,38 @@ static void setup(void){
     memset(cls,0,sizeof cls);memset(pawn,0,sizeof pawn);chain[0]=cls+0x30;
     *(void**)(cls+0x30)=chain;*(int*)(cls+0x38)=0;*(int*)(cls+0x58)=0x570;*(void**)(pawn+0x10)=cls;
     memset(settings,0x91,sizeof settings);settings[0]=45;settings[8]=1;
-    settings[0x33]=1;settings[0x34]=0;settings[0x3e]=1;settings[0x48]=1;settings[0x49]=1;settings[0x4a]=1;settings[0x4b]=0;settings[0x4f]=2;settings[0x90]=1;memcpy(original,settings,sizeof original);
-    copies=sets=destroys=logs=0;on_gt=1;context=1;flat_controls_ready=1;flat_controls_logs=0;
+    settings[0x33]=1;settings[0x34]=0;settings[0x3c]=0;settings[0x3e]=1;settings[0x48]=1;settings[0x49]=1;settings[0x4a]=1;settings[0x4b]=0;settings[0x4f]=2;settings[0x90]=1;memcpy(original,settings,sizeof original);
+    g_watch_side=-1;
+    copies=sets=destroys=logs=0;on_gt=1;qs_ready=1;context=1;flat_controls_ready=1;flat_controls_logs=0;
 }
 int main(void){
+    for(int side=0;side<2;side++){
+        setup();settings[0x3c]=1-side;memcpy(original,settings,sizeof original);
+        assert(touch_flat_controls_qa_watch(side) && copies==1 && sets==1 && destroys==1);
+        for(unsigned i=0;i<sizeof settings;i++)assert(settings[i]==(i==0x3c?side:original[i]));
+        assert(touch_flat_controls_qa_watch(side) && copies==1);
+    }
+    for(int failure=0;failure<8;failure++){
+        setup();
+        int side=1;
+        if(failure==0)side=-1;if(failure==1)side=2;
+        if(failure==2)on_gt=0;if(failure==3)flat_controls_ready=0;
+        if(failure==4)qs_ready=0;if(failure==5)context=2;
+        if(failure==6)settings[0x3c]=2;if(failure==7)*(int*)(cls+0x58)=0x56f;
+        memcpy(original,settings,sizeof original);
+        assert(!touch_flat_controls_qa_watch(side) && !copies && !sets && !destroys && !memcmp(settings,original,sizeof settings));
+    }
+    qs_ready=1;
     setup();touch_flat_controls_tick();assert(copies==1 && sets==1 && destroys==1);
     for(unsigned i=0;i<sizeof settings;i++)
         assert(settings[i]==(i==0x4b?2:i==0x34?1:(i==0 || i==8 || i==0x33 || i==0x3e || i==0x48 || i==0x49 || i==0x4f || i==0x53 || i==0x90)?0:original[i]));
     touch_flat_controls_tick();assert(copies==1); /* No repeated native persistence when already flat. */
+    for(unsigned side=0;side<2;side++){
+        setup();settings[0x3c]=side;touch_flat_controls_tick();
+        assert(g_watch_side==(int)side && settings[0x3c]==side);
+        settings[0x3c]=1-side;touch_flat_controls_tick();
+        assert(g_watch_side==(int)(1-side) && settings[0x3c]==1-side && copies==1);
+    }
     /* ActionTransitionMode is the player's option: either value is kept and never rewritten. */
     for(unsigned mode=0;mode<2;mode++){setup();settings[0x4a]=mode;touch_flat_controls_tick();assert(sets==1 && settings[0x4a]==mode);
         touch_flat_controls_tick();assert(sets==1);}
@@ -82,7 +108,7 @@ int main(void){
         setup();settings[0x34]=strafe;settings[0x3e]=combat;settings[0x49]=facing;touch_flat_controls_tick();
         assert(sets==1 && settings[0x34]==1 && settings[0x3e]==0 && settings[0x49]==0);
     }
-    const unsigned offsets[]={0,8,0x33,0x34,0x3e,0x48,0x49,0x4a,0x4b,0x4f,0x90};
+    const unsigned offsets[]={0,8,0x33,0x34,0x3c,0x3e,0x48,0x49,0x4a,0x4b,0x4f,0x90};
     for(unsigned i=0;i<sizeof offsets/sizeof *offsets;i++){
         setup();settings[offsets[i]]=255;touch_flat_controls_tick();assert(!sets && !copies && !destroys);
     }
@@ -98,8 +124,8 @@ int main(void){
         *(unsigned*)(image+fixture_flat_code[i]+j*4)^=1;install_touch_flat_controls(base);assert(!flat_controls_ready);
         *(unsigned*)(image+fixture_flat_code[i]+j*4)^=1;
     }
-    const unsigned fields[]={0x9db6000,0x9db5808,0x9db5748,0x9db5c58,0x9db55e0,0x9db56e8,0x9db5950,0x9db57a8};
-    for(unsigned i=0;i<8;i++){*(unsigned*)(image+fields[i]+36)^=1;install_touch_flat_controls(base);assert(!flat_controls_ready);*(unsigned*)(image+fields[i]+36)^=1;}
+    const unsigned fields[]={0x9db6000,0x9db5808,0x9db5748,0x9db5c58,0x9db55e0,0x9db56e8,0x9db5950,0x9db57a8,0x9db5a10};
+    for(unsigned i=0;i<9;i++){*(unsigned*)(image+fields[i]+36)^=1;install_touch_flat_controls(base);assert(!flat_controls_ready);*(unsigned*)(image+fields[i]+36)^=1;}
     const unsigned tables[]={0x9d5e8e8,0x9d65b30,0x9d58690,0x9d5a2b0,0x9d5dbf8},counts[]={3,4,4,3,3};
     for(unsigned table=0;table<5;table++)for(unsigned i=0;i<counts[table];i++){
         int64_t* value=(int64_t*)(image+tables[table]+i*16+8);

@@ -127,6 +127,8 @@ python -B analysis/research/test_finalize_mobile_release.py
 
 Other `check_*.py` scripts may require the omitted game binaries, extracted metadata, historical APK checkpoints, or local captures. Native host fixtures additionally use the MSVC and Windows SDK versions named in those scripts. Host checks do not replace hardware acceptance testing.
 
+Set `RE4_QA_CAPTURE_DIR` to the directory containing your local Merc scene captures when running `check_ui_actions_start.py` or checking the captured animation evidence in `check_merc_ui.py`. Device identifiers and capture files remain local.
+
 ## License and credits
 
 Copyright (C) 2026 phys-winner and re4fix contributors.

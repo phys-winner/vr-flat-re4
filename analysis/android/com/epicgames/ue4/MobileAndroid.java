@@ -66,6 +66,7 @@ public final class MobileAndroid {
         catch (java.io.IOException failure) { throw new IllegalStateException("Save import recovery failed", failure); }
         if (!nativeExternalRoot(root.getAbsolutePath()))
             throw new IllegalStateException("Phone localization could not be prepared in external game storage");
+        MobileControls.load(context);
         appContext = context.getApplicationContext();
         try { nativeBind(); } catch (UnsatisfiedLinkError unavailable) {}
     }

@@ -41,7 +41,9 @@ static unsigned long long mg_name(const void* object) {
 static int mg_grip_receiver(void* hand) {
     struct mg_ui_object object={0,0,0};
     struct mg_ui_hit hit={{0,0,0},0};
-    if (!mg_hover(&object,&hit,hand) || !object.actor || !object.screen
+    // HoveringObject reads the last native hand update; absence is not a Trigger receiver.
+    if (!mg_hover(&object,&hit,hand)) return -1;
+    if (!object.actor || !object.screen
         || !mg_layout(object.component,mg_button_class(),0x330)
         || !mg_layout(object.screen,mg_screen_class(),0x248)) return 0;
     const char* component=(const char*)object.component;
@@ -57,7 +59,7 @@ static int mg_current(void* hand,void** pawn_out,unsigned* type_out) {
     if (gt<=0 || gettid()!=gt || !__atomic_load_n(&g_menu_grip_ready,__ATOMIC_ACQUIRE)
         || !phone_type || !phone_player || !phone_active || !hand) return 0;
     unsigned type=phone_type();
-    if ((type!=2 && type!=4 && type!=7) || !mg_layout(hand,mg_hand_class(),0x570)
+    if ((type!=2 && type!=4 && type!=7 && type!=8) || !mg_layout(hand,mg_hand_class(),0x570)
         || *(const unsigned char*)((const char*)hand+0x314)!=1) return 0;
     void* pawn=phone_player(hand);
     if (!pawn || pawn!=phone_active() || !mg_layout(pawn,mg_pawn_class(),0xbb0)) return 0;
@@ -108,7 +110,18 @@ static void touch_menu_grip_tick(void* hand) {
         return;
     }
     if (!request.active || request.pressed || request.action==MP_TRIGGER || now_ms()<request.press_ms) return;
-    int action=mg_grip_receiver(hand) ? MP_GRIP : MP_TRIGGER;
+    int receiver=mg_grip_receiver(hand);
+    if (receiver<0) {
+#ifdef RE4_QA_USER_TRANSITIONS
+        static unsigned waiting_logs,waiting_serial;
+        if(waiting_logs<16 && waiting_serial!=request.serial) {
+            waiting_logs++;waiting_serial=request.serial;
+            LOGF("MENU GRIP wait native hover hand=%p type=%u gesture=%u",hand,type,request.serial);
+        }
+#endif
+        return;
+    }
+    int action=receiver ? MP_GRIP : MP_TRIGGER;
     if (!touch_menu_pointer_choose(request.serial,action)) return;
     struct menu_pointer_request current;
     touch_menu_pointer_snapshot(&current);

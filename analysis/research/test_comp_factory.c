@@ -9,6 +9,7 @@ _Static_assert(sizeof(VkImageCreateInfo)==88,"native image CI ABI");
 _Static_assert(offsetof(VkImageCreateInfo,pNext)==8,"native image pNext ABI");
 _Static_assert(offsetof(VkImageCreateInfo,flags)==16,"native image flags ABI");
 _Static_assert(sizeof(VkImageFormatListCreateInfo)==32,"native list ABI");
+_Static_assert(sizeof(VkImageFormatProperties)==32,"native image properties ABI");
 _Static_assert(offsetof(VkImageFormatListCreateInfo,viewFormatCount)==16,"native list count ABI");
 _Static_assert(offsetof(VkImageFormatListCreateInfo,pViewFormats)==24,"native list array ABI");
 #define PTR(n) ((void*)(uintptr_t)(n))
@@ -26,23 +27,34 @@ static int swidx_of_image(void* image) {(void)image;return -1;}
 static unsigned image_calls,handle_calls,overlay_calls,semaphore_calls,rebind_calls;
 static unsigned semaphore_error_at,semaphore_null_at;
 static int rebind_error;
-static int expected_mutable,image_error,overlay_error;
+static int image_error,overlay_error,image_support_failure;
+static unsigned image_support_calls;
+static int image_properties(void* physical,unsigned format,unsigned type,unsigned tiling,unsigned usage,unsigned flags,void* out) {
+    assert(physical==g_phys_dev && format==VK_FORMAT_B8G8R8A8_UNORM && type==VK_IMAGE_TYPE_2D && tiling==VK_IMAGE_TILING_OPTIMAL);
+    assert(usage==(0x17u|VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT) && flags==VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT);
+    image_support_calls++;
+    VkImageFormatProperties* properties=out;
+    *properties=(VkImageFormatProperties){{16384,16384,1},1,1,VK_SAMPLE_COUNT_1_BIT,UINT64_MAX};
+    if(image_support_failure==1)return VK_ERROR_FORMAT_NOT_SUPPORTED;
+    if(image_support_failure==2)properties->maxExtent.width=2399;
+    if(image_support_failure==3)properties->maxExtent.height=1079;
+    if(image_support_failure==4)properties->maxExtent.depth=0;
+    if(image_support_failure==5)properties->maxMipLevels=0;
+    if(image_support_failure==6)properties->maxArrayLayers=0;
+    if(image_support_failure==7)properties->sampleCounts=VK_SAMPLE_COUNT_4_BIT;
+    return VK_SUCCESS;
+}
 static int create_image(void* dev,const void* info,const void* allocator,void** out) {
     assert(dev==PTR(0x111) && !allocator && out);image_calls++;
     const VkImageCreateInfo* ci=info;
-    assert(ci->sType==VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO && ci->format==(expected_mutable ? VK_FORMAT_B8G8R8A8_UNORM : VK_FORMAT_B8G8R8A8_SRGB));
+    assert(ci->sType==VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO && ci->format==VK_FORMAT_B8G8R8A8_UNORM);
     assert(ci->imageType==VK_IMAGE_TYPE_2D && ci->extent.width==2400 && ci->extent.height==1080 && ci->extent.depth==1);
     assert(ci->mipLevels==1 && ci->arrayLayers==1 && ci->samples==VK_SAMPLE_COUNT_1_BIT && ci->tiling==VK_IMAGE_TILING_OPTIMAL);
     assert(ci->usage==(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|
         VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT));
     assert(ci->sharingMode==VK_SHARING_MODE_EXCLUSIVE && !ci->queueFamilyIndexCount && !ci->pQueueFamilyIndices && !ci->initialLayout);
-    if(expected_mutable) {
-        assert(ci->flags==VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT && ci->pNext);
-        assert(((uintptr_t)ci->pNext&7)==0);
-        const VkImageFormatListCreateInfo* list=ci->pNext;
-        assert(list->sType==VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO && !list->pNext && list->viewFormatCount==2);
-        assert(list->pViewFormats && list->pViewFormats[0]==VK_FORMAT_B8G8R8A8_UNORM && list->pViewFormats[1]==VK_FORMAT_B8G8R8A8_SRGB);
-    } else assert(!ci->flags && !ci->pNext);
+    assert(ci->flags==VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT);
+    assert(!ci->pNext); // Core unrestricted mutable views, including extension-present devices.
     if(image_error)return image_error;
     *out=PTR(0x200+image_calls);return VK_SUCCESS;
 }
@@ -76,7 +88,7 @@ int ovl_init(void* (*gipa)(void*,const char*),void* instance,void* physical,void
     unsigned width,unsigned height,unsigned fmt,unsigned n,void* const* images,void* const* proxies,int mutable_proxy) {
     (void)gipa;assert(instance==g_vk_instance && physical==g_phys_dev && dev==PTR(0x111) && !family);
     assert(width==2400 && height==1080 && fmt==43 && n==2 && images==g_own_imgs && proxies==g_comp_img);
-    assert(mutable_proxy==expected_mutable);
+    assert(mutable_proxy==1);
     assert(proxies[0]==PTR(0x201) && proxies[1]==PTR(0x202));overlay_calls++;return !overlay_error;
 }
 int ovl_rebind(void* const* images,unsigned n) {
@@ -89,14 +101,14 @@ static void factory_case(int capability,int error) {
     g_vk_instance=PTR(0x777);g_phys_dev=PTR(0x888);g_sc_fmt_real=43;
     g_csc_calls=1;
     g_own_imgs[0]=PTR(0xa10);g_own_imgs[1]=PTR(0xa11);
-    image_calls=handle_calls=overlay_calls=0;expected_mutable=capability;image_error=error;
+    image_calls=handle_calls=overlay_calls=image_support_calls=0;image_error=error;image_support_failure=0;
     semaphore_calls=rebind_calls=semaphore_error_at=semaphore_null_at=0;rebind_error=0;
     g_comp_fail=0;g_comp_last_err=0;
-    c_CreateImage=create_image;c_CreateCommandPool=create_handle;
+    c_CreateImage=create_image;c_CreateCommandPool=create_handle;c_GetPhysImageProps=image_properties;
     c_GetPhysMemProps=mem_properties;c_GetImageMemReq=mem_requirements;c_AllocateMemory=create_handle;
     c_BindImageMemory=bind_memory;c_CreateSemaphore=create_semaphore;c_CreateFence=create_handle;c_AllocCmdBufs=command_buffers;
     comp_create(PTR(0x111),2);
-    assert(g_comp_mutable==capability);
+    assert(g_comp_mutable==1 && image_support_calls==1);
     if(error)assert(g_comp_disable && !g_comp_on && image_calls==1 && !overlay_calls);
     else {
         assert(g_comp_on==!overlay_error && g_comp_disable==!!overlay_error);
@@ -239,9 +251,14 @@ int main(void) {
     factory_case(0,0);factory_case(1,0);factory_case(1,VK_ERROR_FORMAT_NOT_SUPPORTED);
     overlay_error=1;factory_case(1,0);overlay_error=0;
     replacement_cases();
+    for(int failure=1;failure<=7;failure++) {
+        factory_case(0,0);g_comp_on=0;image_calls=overlay_calls=0;image_support_failure=failure;
+        comp_create(PTR(0x111),2);
+        assert(!g_comp_on && g_comp_disable && g_comp_last_err==VK_ERROR_FORMAT_NOT_SUPPORTED && !image_calls && !overlay_calls);
+    }
     for(unsigned waits=0;waits<=16;waits++)presentation_case(waits%2,waits,waits,0);
     presentation_case(1,16,48,0);presentation_case(0,17,2,0);presentation_case(0,2,2,7);
     for(unsigned error=1;error<=6;error++)presentation_case(0,2,2,error);
-    puts("PASS: actual compositor factory; native SDK image/list ABI; extension0 immutable50/no pNext; extension1 native UE4 linear44 storage/mutable8 + exact aligned32 list44/50; usage/extent preserved and original image/overlay failure propagated");
+    puts("PASS: actual compositor factory; unrestricted core mutable44/50 with no pNext on extension0 and1; exact format/type/usage/flags capability query and seven unsupported-limit refusals; usage/extent preserved and original image/overlay failure propagated");
     puts("PASS: actual sampled presentation; three exact SDK image/layout/access/stage barriers, overlay before restoration, all0..16 semaphore dependencies, zero-HUD frame, borrowed present immutable; wait/reset/begin/end/fence/submit failures never publish output and fence resets only after complete recording");
 }

@@ -236,13 +236,14 @@ static void device_formats(void) {
     extensions[255]="VK_KHR_image_format_list";capture_case(&ci,VK_SUCCESS,1);
     extensions[255]=0;capture_case(&ci,VK_SUCCESS,0);
     ci.enabledExtensionCount=257;extensions[256]="VK_KHR_image_format_list";capture_case(&ci,VK_SUCCESS,1);
-    // A successful capture actually opens the exact owned-surface route; a later refusal closes it.
+    // Core mutable BGRA views remain available even when the optional format-list extension is unavailable.
     ci.enabledExtensionCount=1;extensions[0]="VK_KHR_image_format_list";
     reset();g_comp_format_list=0;comp_capture_device_formats(&ci,VK_SUCCESS);
     unsigned count=0;assert(!h_vkSurfaceFormats(g_phys_dev,g_comp_surface,&count,0) && count==4);
     driver_calls=property_calls=lookup_calls=log_calls=0;g_comp_surface_logs=0;
     comp_capture_device_formats(&ci,VK_ERROR_INITIALIZATION_FAILED);
-    passthrough(g_phys_dev,g_comp_surface,1);assert(!property_calls && !lookup_calls);
+    count=0;assert(!h_vkSurfaceFormats(g_phys_dev,g_comp_surface,&count,0) && count==4);
+    assert(property_calls==3 && lookup_calls==1);
 }
 int main(void) {
     prepare_device();
@@ -270,7 +271,8 @@ int main(void) {
     reset();g_comp_surface=0;passthrough(g_phys_dev,PTR(0x333),1);
     reset();g_phys_dev=0;passthrough(PTR(0x111),g_comp_surface,1);
     reset();g_comp_disable=1;passthrough(g_phys_dev,g_comp_surface,1);
-    reset();g_comp_format_list=0;passthrough(g_phys_dev,g_comp_surface,1);assert(!lookup_calls && !property_calls);
+    reset();g_comp_format_list=0;count=0;
+    assert(!h_vkSurfaceFormats(g_phys_dev,g_comp_surface,&count,0) && count==4 && lookup_calls==1 && property_calls==3);
     reset();assert(h_vkSurfaceFormats(g_phys_dev,g_comp_surface,0,0)==VK_ERROR_INITIALIZATION_FAILED && driver_calls==1);
     reset();driver_result=VK_ERROR_SURFACE_LOST_KHR;passthrough(g_phys_dev,g_comp_surface,2);
     reset();driver_result=VK_INCOMPLETE;passthrough(g_phys_dev,g_comp_surface,2);

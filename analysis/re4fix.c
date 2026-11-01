@@ -54,7 +54,8 @@ static volatile int g_menu_view_active;
 static volatile long g_menu_view_ms;
 static volatile long g_menu_tap_ms;   // last menu pointer tap (input thread)
 static volatile long g_heal_holster_ms;   // GameThread: the healing item sits in a reachable holster (no QuickSelect)
-static volatile long g_watch_since_ms, g_watch_until_ms;   // hold the health dial: left wrist raised to the watch
+static volatile long g_watch_since_ms, g_watch_until_ms;   // hold the health dial: selected wrist raised to the watch
+static volatile int g_watch_side;                       // original Settings.WatchHand, published on GameThread
 static volatile int g_mm_row_trace;
 // In-world UI screens shown during gameplay (range console, quit prompt): GameThread publishes the projected
 // screen position of every enabled control; a tap near one clicks it natively instead of a laser pointer pulse.
@@ -113,6 +114,15 @@ static void touch_mirror_idle_tick(void);
 static void touch_tutorial_tick(long now);
 static void touch_throw_idle_tick(void);
 static void touch_gamepad_log(void);
+static void touch_merc_ui_tick(void);
+#ifdef RE4_QA_USER_TRANSITIONS
+static int qa_user_transitions_command(const char* action);
+static void qa_user_transitions_tick(void);
+static void backbuffer_debug_request(void);
+static void backbuffer_debug_tick(void);
+static int qa_frame_pacing_request(void);
+static void qa_frame_pacing_tick(void);
+#endif
 static volatile int g_sce_diag_request;
 static void touch_map_zoom_tick(long now);
 static volatile unsigned g_grip_latched;
@@ -142,6 +152,7 @@ static unsigned touch_grenade_owned_grip_mask(void);
 static void touch_grenade_cancel(void);
 static void touch_grenade_cancel_tick(void* hand,int side,long now);
 static void touch_mobile_settings_tick(void);
+static void touch_mobile_settings_fifo(int enabled);
 static void touch_flat_controls_tick(void);
 static void touch_mobile_android_tick(void);
 static void touch_menu_view_tick(long now);
@@ -268,6 +279,7 @@ static int patch_code(void* target, void* hook) {
 }
 
 unsigned long g_ue4_base_cached;
+#include "re4fix_render_input.h"
 #include "re4fix_packaged_obb.h"
 #include "re4fix_mobile_android.h"
 #include "re4fix_loading.h"
@@ -891,6 +903,7 @@ int h_vkCreateSwapchain(void* dev, const void* ci, const void* ac, void** out) {
     // VkSwapchainCreateInfoKHR: surface@24 minImageCount@32 imageFormat@36 imageColorSpace@40
     // imageExtent@44/48 imageArrayLayers@52 imageUsage@56 ... presentMode@88, sizeof = 104
     g_csc_calls++;
+    touch_mobile_settings_fifo(0);
     if (!ci) return r_vkCreateSwapchain(dev, ci, ac, out);
     unsigned char buf[104];
     memcpy(buf, ci, 104);
@@ -937,6 +950,9 @@ int h_vkCreateSwapchain(void* dev, const void* ci, const void* ac, void** out) {
         g_comp_usage_extra = u0 & 0x80u;   // INPUT_ATTACHMENT
     }
     int r = r_vkCreateSwapchain(dev, buf, ac, out);
+    touch_mobile_settings_fifo(r==0 && out && *out && surface
+        && surface==__atomic_load_n(&g_comp_surface,__ATOMIC_ACQUIRE)
+        && *(const unsigned*)buf==1000001000u && *(const unsigned*)(buf+88)==2);
     g_csc_lastfmt = (int)*(unsigned*)(buf + 36); g_csc_lastr = r;
     LOGF("vkCreateSwapchain -> %d fmt=%u cs=%u %ux%u minIC=%u usage 0x%x->0x%x (surf.usage=0x%x caps=%d) sc=%p",
          r, *(unsigned*)(buf + 36), *(unsigned*)(buf + 40), w, h, *(unsigned*)(buf + 32), u0, want, caps[12], cr, out ? *out : 0);
@@ -1754,7 +1770,8 @@ static void head_pose_node(long node, qf_t* q, float pos[3]) {
     *q = q_mul(qy, qp);
     pos[0] = 0; pos[1] = g_eye_height; pos[2] = 0;
     if (g_touch_context == 2 || g_touch_context == 8) {
-        float back[3] = {0, 0, g_pause_back}, w[3];
+        // Keep the merchant's horizontal sale table in front of the eye without leaving its native room.
+        float back[3] = {0, 0, g_pause_back + (g_touch_context == 8 ? 0.96f : 0)}, w[3];
         q_rot(qy, back, w); pos[0] += w[0]; pos[2] += w[2];
     }
 }
@@ -1793,7 +1810,10 @@ static float quick_turn_offset(void) {
 }
 static void head_angles_now(float* yaw, float* pitch) {
     float y = g_look_yaw + g_yaw_turned + quick_turn_offset(), pt = mobile_view_pitch(g_touch_context,g_look_pitch);
-    if(g_touch_context==4 || (g_touch_context==7 && ptr_now_ms()-g_lobby_menu_ms<500))y=0;
+    long now=ptr_now_ms(),lobby=__atomic_load_n(&g_lobby_menu_ms,__ATOMIC_ACQUIRE);
+    // Native frontend tabs also use Pause2; centre only with the confirmed Lobby capability.
+    if(g_touch_context==4 || ((g_touch_context==2 || g_touch_context==7)
+        && lobby>0 && now>=lobby && now-lobby<500))y=0;
     if (g_menu_view_active) {
         struct timespec now_ts; clock_gettime(CLOCK_MONOTONIC, &now_ts);
         long now_ms_value = now_ts.tv_sec * 1000L + now_ts.tv_nsec / 1000000L;
@@ -1889,12 +1909,11 @@ int h5_ovrp_GetNodePoseState3(long step, long frame, long node, long out) {
         touch_qte_pose(hi,ptr_now_ms(),off);
         (void)touch_grenade_pose(hi,ptr_now_ms(),off);
         touch_throw_pose(hi,ptr_now_ms(),off);
-        if (hi == 0) {   // wrist watch: the left forearm comes up with the watch face toward the view
+        if (hi == __atomic_load_n(&g_watch_side,__ATOMIC_ACQUIRE)) {
             float w = watch_pose_weight(ptr_now_ms());
             if (w > 0) {
-                static const float watch_off[3] = {-0.25f, 0.065f, -0.40f};
-                for (int k = 0; k < 3; k++) off[k] += (watch_off[k] - off[k]) * w;
-                q = q_mul(q, q_euler_deg(0, 75.0f * w, -90.0f * w));
+                mobile_watch_offset(hi,w,off);
+                q = q_mul(q, q_euler_deg(0, 75.0f * w, (hi ? 90.0f : -90.0f) * w));
             }
         }
         if (g_hand_rot_ovr_on[hi]) q = q_mul(q, q_euler_deg(g_hand_rot_ovr[hi][0], g_hand_rot_ovr[hi][1], g_hand_rot_ovr[hi][2]));
@@ -2266,6 +2285,10 @@ void hook_mhtick(void* self, float dt) {
     __atomic_store_n(&g_touch_gt_tid,(int)syscall(SYS_gettid),__ATOMIC_RELEASE);
     __atomic_store_n(&g_gt_alive_ms,ptr_now_ms(),__ATOMIC_RELEASE);
     touch_tracking_tick();
+#ifdef RE4_QA_USER_TRANSITIONS
+    backbuffer_debug_tick();
+    qa_frame_pacing_tick();
+#endif
     apply_touch_graphics(g_ue4_base_cached);
     touch_phone_tick(self);
     touch_heal_progress_tick(self,ptr_now_ms());
@@ -2283,6 +2306,7 @@ void hook_mhtick(void* self, float dt) {
     touch_mirror_idle_tick();
     touch_throw_idle_tick();
     gate_mhtick(self, dt);
+    touch_merc_ui_tick();
     touch_menu_view_tick(ptr_now_ms());
     touch_ui_diag_tick();
     touch_inspect_tick();
@@ -2290,6 +2314,9 @@ void hook_mhtick(void* self, float dt) {
     touch_map_zoom_tick(ptr_now_ms());
     touch_comfort_wizard_tick(ptr_now_ms());
     touch_mobile_menu_tick();
+#ifdef RE4_QA_USER_TRANSITIONS
+    qa_user_transitions_tick();
+#endif
     touch_mobile_settings_tick();
     touch_flat_controls_tick();
     touch_mobile_android_tick();
@@ -2419,6 +2446,7 @@ static void* grip_find(const char* pat) {
 #include "re4fix_interact.h"
 #include "re4fix_hud_state.h"
 #include "re4fix_qte.h"
+#include "re4fix_push_objects.h"
 #include "re4fix_prompt_visual.h"
 static void touch_prompt_visual_diag(void) {
     if(!__atomic_exchange_n(&g_prompt_visual_diag_request,0,__ATOMIC_ACQ_REL))return;
@@ -2455,6 +2483,7 @@ static int touch_grenade_selected_side(long now) {
 #include "re4fix_throw.h"
 #include "re4fix_hud_extra.h"
 #include "re4fix_flat_view.h"
+#include "re4fix_merc_ui.h"
 #include "re4fix_weapon_ui.h"
 #include "re4fix_map_zoom.h"
 #include "re4fix_typewriter_touch.h"
@@ -2465,15 +2494,23 @@ void hook_ghtick(void* self, float dt) {
     int cancel_side=*(const unsigned char*)((const char*)self+0x314);
     touch_grenade_cancel_tick(self,cancel_side,ptr_now_ms());
     touch_tracking_tick();
+#ifdef RE4_QA_USER_TRANSITIONS
+    backbuffer_debug_tick();
+    qa_frame_pacing_tick();
+#endif
     apply_touch_graphics(g_ue4_base_cached);
     if(!touch_grenade_owned_grip_mask())touch_pause_tick(self);
     touch_unpause_tick(self);
     if (*(const unsigned char*)((const char*)self + 0x314)==1) {
+#ifdef RE4_QA_USER_TRANSITIONS
+        qa_user_transitions_tick();
+#endif
         touch_mobile_settings_tick();
         touch_flat_controls_tick();
     }
     if (cancel_side<2 && (g_touch_cancel&(1<<cancel_side))) touch_weapon_cycle_cancel(self);
     gate_ghtick(self, dt);
+    touch_merc_ui_tick();
     int side = *(const unsigned char*)((const char*)self + 0x314);
     long nw = ptr_now_ms();
     void* hand_pawn = phone_player ? phone_player(self) : 0;
@@ -2491,6 +2528,7 @@ void hook_ghtick(void* self, float dt) {
     touch_body_tick(self);
     g_ghtick_n++;
     touch_phone_tick(self);
+    touch_push_objects_tick(self,nw);
     touch_hud_state_tick(self,nw);
     touch_heal_progress_tick(self,nw);
     if(side==1)touch_prompt_visual_diag();
@@ -2589,6 +2627,16 @@ static void devcmd_exec(char* line) {
     int n = sscanf(line, "%15s %47s %f %f %f %f", c, a1, &f1, &f2, &f3, &f4);
     if (n < 1) return;
     long nw = ptr_now_ms();
+#ifdef RE4_QA_USER_TRANSITIONS
+    if (!strcmp(c, "qatrans") && n >= 2) { (void)qa_user_transitions_command(a1); return; }
+    if (!strcmp(c, "backbuffer")) { backbuffer_debug_request(); return; }
+    if (!strcmp(c, "pacing")) { (void)qa_frame_pacing_request(); return; }
+    if (!strcmp(c, "pushdiag") && n >= 2) {
+        char* end=0;long duration=strtol(a1,&end,10);
+        if(end!=a1 && !*end)(void)touch_push_objects_diag_request(duration);
+        return;
+    }
+#endif
     if (!strcmp(c, "btn") && n >= 3) {              // btn <A|B|X|Y|MENU|L3|R3|RT|RG|LT|LG> <ms>
         int k = btn_bit_of(a1); if (k >= 0) g_cmd_until[k] = nw + (long)f1;
     } else if (!strcmp(c, "stick") && n >= 5 && isfinite(f1) && isfinite(f2) && isfinite(f3) && fabsf(f1) <= 1 && fabsf(f2) <= 1 && f3 >= 0 && f3 <= 60000) {
@@ -2727,11 +2775,19 @@ static void* devcmd_thread(void* arg) {
 #include "re4fix_tutorial.h"
 #include "re4fix_menu_grip.h"
 #include "re4fix_graphics.h"
+#include "re4fix_backbuffer.h"
 #include "re4fix_pause.h"
 #include "re4fix_mobile_menu.h"
 #include "re4fix_enemy_aggression.h"
 #include "re4fix_view_extra.h"
 #include "re4fix_media_diag.h"
+#ifdef RE4_QA_USER_TRANSITIONS
+#include "research/qa_frame_pacing.h"
+#include "research/qa_watch_binding.h"
+#include "research/qa_door_entry.h"
+#include "research/qa_treasure_touch.h"
+#include "research/qa_user_transitions.h"
+#endif
 
 unsigned long g_tgt_loadmap, g_tgt_beginplay;
 __attribute__((naked)) static int gate_loadmap(void* e, void* wc, void* url, void* pend, void* err) {
@@ -2842,6 +2898,7 @@ static void* main_thread(void* arg) {
     if (!base) { LOGI("no libUE4"); return 0; }
     LOGI("libUE4 base=%lx", base);
     g_ue4_base_cached = base;
+    install_backbuffer(base);
     install_comp_framebuffer_lifecycle(base);
     install_packaged_obb(base);
     install_mobile_android(base);
@@ -2913,6 +2970,10 @@ static void* main_thread(void* arg) {
     install_touch_extras_save(base);
     install_touch_vr_comfort(base);   // class only: Tunneling follows the native option (default None)
     install_touch_mobile_settings(base);
+#ifdef RE4_QA_USER_TRANSITIONS
+    (void)qa_frame_pacing_install(base);
+#endif
+    install_render_input(base);
     install_touch_menu_visual(base);
     install_touch_menu_grip(base);
     install_touch_unpause(base);
@@ -2920,6 +2981,7 @@ static void* main_thread(void* arg) {
     install_touch_interact(base);
     install_touch_hud_state(base);
     install_touch_qte(base);
+    install_touch_push_objects(base);
     install_touch_prompt_visual(base);
     install_touch_controller(base);
     install_touch_weapon(base);
@@ -2941,6 +3003,7 @@ static void* main_thread(void* arg) {
     install_touch_throw(base);
     install_hud_extra(base);
     install_flat_view(base);
+    install_touch_merc_ui(base);
     install_map_zoom(base);
     install_touch_typewriter(base);
     install_mobile_menu(base);

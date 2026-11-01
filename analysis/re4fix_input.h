@@ -8,7 +8,7 @@
 // Gameplay mode:
 //   * left half (outside buttons): floating move stick (base appears under the thumb) -> left thumbstick
 //   * right half (outside buttons): drag = look; direct taps click menu entries only
-//   * action icons: fire, hold to aim, reload, knife, weapon, interact, inventory and pause
+//   * action icons: fire, aim (tap/hold setting), reload, knife, weapon, interact, inventory and pause
 // Menus use direct touch, confirm/back; the communicator has its own answer icon.
 
 // ---- virtual control state ----
@@ -61,7 +61,9 @@ static const struct ctl g_ctl[C_N] = {
 #define STICK_DEF_U 0.105f      // idle stick base position
 #define STICK_DEF_V 0.790f
 #define STICK_R     0.110f      // stick travel radius (units of H)
-#define LOOK_SENS   0.0026f     // radians per surface pixel
+#define LOOK_SENS   0.0026f     // radians per physical View pixel
+static float render_input_touch_x(float delta,float render_width);
+static float render_input_touch_y(float delta,float render_height);
 
 #define RT_NONE 0
 #define RT_LSTICK 1
@@ -71,7 +73,7 @@ static const struct ctl g_ctl[C_N] = {
 #define RT_WATCH (-4)           // hold the health dial to raise the wrist; a drag becomes movement
 #define RT_BTN 3                // + control index
 #define MAXT 10
-struct vt { int on, h, role, grenade, skip; float x0, y0, x, y, lx, ly; long t0ms; };
+struct vt { int on, h, role, grenade, skip, left_fire; float x0, y0, x, y, lx, ly; long t0ms; };
 static struct vt g_vt[MAXT];
 static struct { int active, h1, h2; float last_d; } g_pinch;
 static pthread_mutex_t g_imx = PTHREAD_MUTEX_INITIALIZER;
@@ -80,6 +82,7 @@ static unsigned g_pad_held_ctl;
 static float g_pad_move[2];
 static volatile long g_last_touch_ms;     // last touch event: a finger brings the touch HUD back at once
 static void touch_gamepad_frame(void);
+static void touch_gamepad_reset(void);
 static int touch_gamepad_recent(long now);
 static int touch_gamepad_hud_hidden(long now);
 static long g_tlog;
@@ -99,6 +102,7 @@ static int mobile_prefs_qturn(void);
 static int mobile_prefs_aim_walk(void);
 static int mobile_prefs_gyro(void);
 static int mobile_prefs_gyro_sensitivity(void);
+#include "re4fix_touch_layout.h"
 static void touch_health_flat_presented(long now);
 // Hold-to-skip (cutscenes): the finger must stay still this long; the ring fills after a short grace period.
 #define SKIP_HOLD_GRACE_MS 200
@@ -125,10 +129,13 @@ static void touch_refresh_context_gt(void) {
         __atomic_store_n(&g_touch_context, (int)phone_type(), __ATOMIC_RELEASE);
 }
 static long now_ms(void){ struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L; }
+static float touch_physical_distance(float dx,float dy) {
+    return hypotf(render_input_touch_x(dx,g_tw),render_input_touch_y(dy,g_th));
+}
 // Native menu hands of the ACTIVE pawn tick only while an in-world menu is open; this includes
 // Bio4 (context 1) overlays such as the shooting-range quit prompt. Cutscenes (3) keep gameplay rules.
 static int menu_mode(void){ return g_touch_context == 5 || (g_touch_context != 3 && (now_ms() - g_menu_tick_ms) < 300); }
-static int menu_grip_context(void){ return g_touch_context==2 || g_touch_context==4 || g_touch_context==7; }
+static int menu_grip_context(void){ return g_touch_context==2 || g_touch_context==4 || g_touch_context==7 || g_touch_context==8; }
 static void sync_touch_context(int menu);
 static int menu_pointer_active(long now){
     return g_menu_pointer.serial && (g_menu_pointer.down || (g_menu_pointer.tap && now<g_menu_pointer.release_ms));
@@ -193,6 +200,7 @@ static int ctl_visible(int z, int menu) {
     return 1;
 }
 static unsigned ctl_bit(int z) {
+    if(z==C_INTERACT)return touch_push_objects_input_mask(now_ms());
     if(z==C_FIRE && touch_motion_pose_busy())return 0;
     if(z==C_FIRE && touch_throw_mode(now_ms()))return 0;   // spear/lantern: Fire throws instead of pulling a trigger
     if (z==C_BACK && g_touch_context==2)return 0;
@@ -231,6 +239,11 @@ static void touch_watch_hold(int held, long now) {
 
 static struct ctl ctl_geometry(int z) {
     struct ctl c=g_ctl[z];
+    if (g_touch_layout_custom) {
+        const float* v=g_touch_layout+z*4;
+        c.cx=v[0];c.cy=v[1];c.r=v[2];
+        return touch_layout_clamp(c);
+    }
     if (z==C_BACK && g_touch_context==2) { c.cx=.965f; c.cy=.925f; c.r=.048f; }
     struct touch_mobile_settings settings=touch_mobile_settings_snapshot();
     float minx=-1,maxx=1,miny=-1,maxy=1;
@@ -250,10 +263,15 @@ static struct ctl ctl_geometry(int z) {
 }
 static int ctl_at(float x, float y, int menu) {
     for (int i = 0; i < C_N; i++) {
-        if (!ctl_visible(i, menu)) continue;
+        if (!ctl_visible(i, menu) || !touch_layout_shown(i)) continue;
         struct ctl c=ctl_geometry(i);
         float dx = x - c.cx * g_tw, dy = y - c.cy * g_th, rr = c.r * g_th * 1.15f;
         if (dx * dx + dy * dy <= rr * rr) return i;
+    }
+    if (ctl_visible(C_FIRE,menu) && touch_layout_shown(TOUCH_LAYOUT_LEFT_FIRE)) {
+        struct ctl c=touch_left_fire_geometry();
+        float dx=x-c.cx*g_tw,dy=y-c.cy*g_th,rr=c.r*g_th*1.15f;
+        if (dx*dx+dy*dy<=rr*rr) return TOUCH_LAYOUT_LEFT_FIRE;
     }
     return -1;
 }
@@ -281,7 +299,7 @@ static struct vt* vt_new(int h){ for(int i=0;i<MAXT;i++) if(!g_vt[i].on){ memset
 
 static void stick_vec(const struct vt* t, float* ox, float* oy){
     float rad = 58.0f * (float)__atomic_load_n(&g_touch_density_milli,__ATOMIC_ACQUIRE) / 1000.0f * touch_mobile_settings_snapshot().size;
-    float dx = t->x - t->x0, dy = t->y - t->y0, m = hypotf(dx,dy);
+    float dx = render_input_touch_x(t->x-t->x0,g_tw), dy = render_input_touch_y(t->y-t->y0,g_th), m = hypotf(dx,dy);
     float magnitude=fmaxf(0,fminf(1,(m/rad-.12f)/.88f));
     *ox = m>0 ? dx/m*magnitude : 0; *oy = m>0 ? -dy/m*magnitude : 0;
 }
@@ -297,8 +315,7 @@ static void recompute(void){
         struct vt* t = &g_vt[i]; if (!t->on) continue;
         if (t->role == RT_WATCH && !menu && g_touch_context == 1) {
             watch = 1;
-            float dx=t->x-t->x0,dy=t->y-t->y0;
-            if(t->x<.46f*g_tw && dx*dx+dy*dy>900.0f)stick_vec(t,&lx,&ly);
+            if(t->x<.46f*g_tw && touch_physical_distance(t->x-t->x0,t->y-t->y0)>30.0f)stick_vec(t,&lx,&ly);
         }
         if (t->role == RT_LSTICK && !menu && g_touch_context != 3) stick_vec(t, &lx, &ly);
         else if (t->role >= RT_BTN && ctl_visible(t->role - RT_BTN, menu)) {
@@ -396,6 +413,7 @@ static void touch_button_press(int z, int menu) {
 }
 
 static void touch_reset(void) {
+    touch_gamepad_reset();
     touch_typewriter_cancel();
     touch_weapon_cycle_input_reset();
     touch_qte_reset();
@@ -459,8 +477,8 @@ static void pointer_click(float x, float y, long dur){
 }
 static void touch_drag_look(struct vt* t,float x,float y,int menu) {
     if(menu || g_touch_context!=1)return;
-    float dx=x-t->lx,dy=y-t->ly;
-    float limit=.5f*g_tw,length=hypotf(dx,dy);
+    float dx=render_input_touch_x(x-t->lx,g_tw),dy=render_input_touch_y(y-t->ly,g_th);
+    float limit=.5f*(render_input_touch_x(g_tw-1,g_tw)+1),length=hypotf(dx,dy);
     if(length>limit){dx*=limit/length;dy*=limit/length;}
     // Android can batch MOVE history; distance must not depend on its dispatch timing.
     float sensitivity=LOOK_SENS*touch_mobile_settings_snapshot().sensitivity;
@@ -526,6 +544,8 @@ void touch_process(const void* ta){
                 continue;
             }
             int z = ctl_at(x, y, menu);
+            t->left_fire=z==TOUCH_LAYOUT_LEFT_FIRE;
+            if(t->left_fire)z=C_FIRE;
             if (z<0 && g_touch_context==5 && ctl_visible(C_PHONE,menu) && mobile_phone_hit(x/g_tw,y/g_th)) z=C_PHONE;
             if (z<0 && !menu && g_touch_context==1 && touch_prompt_hit(x,y)) z=C_INTERACT;   // tap the on-screen prompt
             if (z >= 0) {
@@ -542,8 +562,8 @@ void touch_process(const void* ta){
                     if (first && first != t && !g_pinch.active && touch_map_active(t->t0ms)) {
                         menu_pointer_cancel_locked();
                         first->role = RT_PINCH; t->role = RT_PINCH;
-                        float dx = x - first->x, dy = y - first->y;
-                        g_pinch.active = 1; g_pinch.h1 = first->h; g_pinch.h2 = h; g_pinch.last_d = sqrtf(dx * dx + dy * dy);
+                        g_pinch.active = 1; g_pinch.h1 = first->h; g_pinch.h2 = h;
+                        g_pinch.last_d = touch_physical_distance(x-first->x,y-first->y);
                         LOGF("TOUCH map pinch start d=%.0f", g_pinch.last_d);
                         continue;
                     }
@@ -567,10 +587,10 @@ void touch_process(const void* ta){
             else { t->role = RT_RSTICK; g_ptr_u = x / g_tw; g_ptr_v = y / g_th; g_ptr_down++; }
         } else if (type == 1) {
             if (!t) continue;
-            if (t->role == RT_WATCH && (x - t->x0) * (x - t->x0) + (y - t->y0) * (y - t->y0) > 30.0f * 30.0f) {
+            if (t->role == RT_WATCH && touch_physical_distance(x-t->x0,y-t->y0)>30.0f) {
                 if(x>=.46f*g_tw){touch_drag_look(t,x,y,menu);}
             }
-            if (t->role == RT_RSTICK || (t->role == RT_BTN+C_FIRE && g_touch_weapon==1)) {
+            if (t->role == RT_RSTICK || (t->role == RT_BTN+C_FIRE && !t->left_fire && g_touch_weapon==1)) {
                 touch_drag_look(t,x,y,menu);
                 g_ptr_u = x / g_tw; g_ptr_v = y / g_th;
             } else if (t->role == RT_MENU_POINTER && g_menu_pointer.down && g_menu_pointer.h == h) {
@@ -580,7 +600,7 @@ void touch_process(const void* ta){
             if (t->role == RT_PINCH && g_pinch.active) {
                 struct vt* a = vt_find(g_pinch.h1), *b = vt_find(g_pinch.h2);
                 if (a && b) {
-                    float dx = a->x - b->x, dy = a->y - b->y, d = sqrtf(dx * dx + dy * dy);
+                    float d = touch_physical_distance(a->x-b->x,a->y-b->y);
                     if (g_pinch.last_d > 40.0f && d > 40.0f && fabsf(d / g_pinch.last_d - 1.0f) > 0.01f) {
                         touch_map_zoom_add(d / g_pinch.last_d); g_pinch.last_d = d;
                     }
@@ -589,8 +609,8 @@ void touch_process(const void* ta){
         } else {
             if (t) {
                 if(t->grenade==1)touch_grenade_fire_up(now_ms());t->grenade=0;
-                float dx = x - t->x0, dy = y - t->y0; long dur = now_ms() - t->t0ms;
-                int still = dx * dx + dy * dy < 30.0f * 30.0f;
+                long dur = now_ms() - t->t0ms;
+                int still = touch_physical_distance(x-t->x0,y-t->y0)<30.0f;
                 if (t->role == RT_PINCH) {
                     // Either finger ends the pinch; the other one never becomes a pointer or a click.
                     for (int k = 0; k < MAXT; k++) if (g_vt[k].on && g_vt[k].role == RT_PINCH) g_vt[k].role = RT_NONE;
@@ -630,8 +650,8 @@ void touch_process(const void* ta){
                         // A second short tap close to the first one on the look side turns the view around.
                         static long last_tap_ms; static float last_tap_x, last_tap_y;
                         long tap_ms = now_ms();
-                        float ex = x - last_tap_x, ey = y - last_tap_y;
-                        if (mobile_prefs_qturn() && last_tap_ms && tap_ms - last_tap_ms < 320 && ex * ex + ey * ey < 160.0f * 160.0f) {
+                        if (mobile_prefs_qturn() && last_tap_ms && tap_ms - last_tap_ms < 320
+                            && touch_physical_distance(x-last_tap_x,y-last_tap_y)<160.0f) {
                             __atomic_store_n(&g_qturn_request_ms, tap_ms, __ATOMIC_RELEASE);
                             last_tap_ms = 0;
                             LOGF("TOUCH quick 180 turn (double tap)");
@@ -691,10 +711,11 @@ int touch_overlay_quads(struct ovl_quad* q, int max) {
     unsigned held = g_buttons | g_grip_latched;
     for (int z = 0; z < C_N; z++) if (nw < g_btn_hold_until[z]) held |= ctl_bit(z);
     int pad_hidden = touch_gamepad_hud_hidden(nw);   // a gamepad in use hides the touch icons
-    for (int i = 0; i < C_N && !pad_hidden; i++) {
-        struct ctl geometry=ctl_geometry(i);
+    for (int visual = 0; visual < TOUCH_LAYOUT_COUNT && !pad_hidden; visual++) {
+        int i=visual==TOUCH_LAYOUT_LEFT_FIRE ? C_FIRE : visual;
+        struct ctl geometry=visual==TOUCH_LAYOUT_LEFT_FIRE ? touch_left_fire_geometry() : ctl_geometry(i);
         const struct ctl* c = &geometry;
-        if (!ctl_visible(i, menu)) continue;
+        if (!ctl_visible(i, menu) || !touch_layout_shown(visual)) continue;
         float cx = c->cx * g_tw, cy = c->cy * g_th, rad = c->r * g_th;
         struct touch_quickselect_state selected=touch_quickselect_state(nw);
         int slot=i==C_KNIFE ? 3 : i==C_WEAPON ? 0 : i==C_WEAPON2 ? 1 : i==C_GRENADE ? 2 : i==C_HEAL ? 6 : -1;
@@ -762,8 +783,7 @@ int touch_overlay_quads(struct ovl_quad* q, int max) {
         for (int i=0;i<MAXT;i++) {
             struct vt* s=&g_vt[i];
             if (!s->on || s->role!=RT_RSTICK || s->skip) continue;
-            float dx=s->x-s->x0,dy=s->y-s->y0;
-            if (dx*dx+dy*dy>30.0f*30.0f) { s->skip=2; continue; }
+            if (touch_physical_distance(s->x-s->x0,s->y-s->y0)>30.0f) { s->skip=2; continue; }
             long held=nw-s->t0ms-SKIP_HOLD_GRACE_MS;
             if (held<0) continue;
             float progress=(float)held/(float)SKIP_HOLD_FILL_MS;
@@ -778,7 +798,7 @@ int touch_overlay_quads(struct ovl_quad* q, int max) {
     }
     if (menu && touch_gamepad_recent(nw) && nw < g_ptr_until_ms)   // gamepad pointer in menus
         n = ovl_add(q, n, max, OVL_DOT, g_ptr_u * g_tw, g_ptr_v * g_th, g_th * 0.018f, 0.95f);
-    if (!pad_hidden && !menu && g_touch_context==1 && ctl_visible(C_RELOAD,0) && touch_tutorial_reload_hint(nw)) {
+    if (!pad_hidden && !menu && g_touch_context==1 && ctl_visible(C_RELOAD,0) && touch_layout_shown(C_RELOAD) && touch_tutorial_reload_hint(nw)) {
         struct ctl c=ctl_geometry(C_RELOAD);
         float x=c.cx*g_tw,y=c.cy*g_th-(c.r+.008f)*g_th;
         for (int i=0;i<4;i++) {   // short downward arrow ends just above the actual Reload hitbox

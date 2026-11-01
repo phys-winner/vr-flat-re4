@@ -49,6 +49,7 @@ static long g_comp_blits, g_comp_fail, g_comp_skip, g_comp_views, g_comp_inits;
 static int g_comp_last_err;
 
 static int  (*c_CreateImage)(void*, const void*, const void*, void**);
+static int  (*c_GetPhysImageProps)(void*, unsigned, unsigned, unsigned, unsigned, unsigned, void*);
 static void (*c_GetImageMemReq)(void*, void*, void*);
 static int  (*c_AllocateMemory)(void*, const void*, const void*, void**);
 static int  (*c_BindImageMemory)(void*, void*, void*, unsigned long);
@@ -67,8 +68,9 @@ static int  (*c_ResetFences)(void*, unsigned, void* const*);
 static void* comp_fn(const char* n) { return (r_gipa && g_vk_instance) ? r_gipa(g_vk_instance, n) : 0; }
 
 static int comp_resolve(void) {
-    if (c_CreateImage && c_CreateFence) return 1;
+    if (c_CreateImage && c_CreateFence && c_GetPhysImageProps) return 1;
     c_CreateImage = (int (*)(void*, const void*, const void*, void**))comp_fn("vkCreateImage");
+    c_GetPhysImageProps = (int (*)(void*, unsigned, unsigned, unsigned, unsigned, unsigned, void*))comp_fn("vkGetPhysicalDeviceImageFormatProperties");
     c_GetImageMemReq = (void (*)(void*, void*, void*))comp_fn("vkGetImageMemoryRequirements");
     c_AllocateMemory = (int (*)(void*, const void*, const void*, void**))comp_fn("vkAllocateMemory");
     c_BindImageMemory = (int (*)(void*, void*, void*, unsigned long))comp_fn("vkBindImageMemory");
@@ -83,7 +85,7 @@ static int comp_resolve(void) {
     c_CreateFence = (int (*)(void*, const void*, const void*, void**))comp_fn("vkCreateFence");
     c_WaitFences = (int (*)(void*, unsigned, void* const*, unsigned, unsigned long))comp_fn("vkWaitForFences");
     c_ResetFences = (int (*)(void*, unsigned, void* const*))comp_fn("vkResetFences");
-    return c_CreateImage && c_GetImageMemReq && c_AllocateMemory && c_BindImageMemory && c_GetPhysMemProps &&
+    return c_CreateImage && c_GetPhysImageProps && c_GetImageMemReq && c_AllocateMemory && c_BindImageMemory && c_GetPhysMemProps &&
            c_CreateCommandPool && c_AllocCmdBufs && c_BeginCmd && c_EndCmd && c_ResetCmd && c_CmdBarrier &&
            c_CreateSemaphore && c_CreateFence && c_WaitFences && c_ResetFences;
 }
@@ -137,7 +139,19 @@ static void comp_create(void* dev, unsigned n) {
     }
     if (!n || n > COMP_MAX || !g_comp_w || !g_comp_h || !g_phys_dev) { LOGF("COMP: bad params n=%u %ux%u phys=%p", n, g_comp_w, g_comp_h, g_phys_dev); return; }
     if (!comp_resolve()) { LOGF("COMP: missing Vulkan entry points"); g_comp_disable = 1; return; }
-    g_comp_mutable=__atomic_load_n(&g_comp_format_list,__ATOMIC_ACQUIRE);
+    // Mutable views are core Vulkan 1.0; the optional format list only narrows driver optimizations.
+    g_comp_mutable=1;
+    _Alignas(8) unsigned char image_properties[32]={0}; // VkImageFormatProperties: extent@0, mips@12, layers@16, samples@20.
+    int image_support=c_GetPhysImageProps(g_phys_dev,44,1,0,0x17u|g_comp_usage_extra,8,image_properties);
+    if (image_support || *(unsigned*)image_properties<g_comp_w || *(unsigned*)(image_properties+4)<g_comp_h
+        || !*(unsigned*)(image_properties+8) || !*(unsigned*)(image_properties+12)
+        || !*(unsigned*)(image_properties+16) || !(*(unsigned*)(image_properties+20)&1u)) {
+        g_comp_disable=1;g_comp_last_err=image_support ? image_support : -11;
+        LOGF("COMP: core mutable BGRA image unsupported result=%d",g_comp_last_err);return;
+    }
+    LOGF("COMP: core mutable BGRA44/50 supported format_list_enabled=%d restricted_views=0 samples=%x max=%ux%u",
+        __atomic_load_n(&g_comp_format_list,__ATOMIC_ACQUIRE),*(unsigned*)(image_properties+20),
+        *(unsigned*)image_properties,*(unsigned*)(image_properties+4));
     unsigned char mp[528]; memset(mp, 0, sizeof mp);   // VkPhysicalDeviceMemoryProperties = 520 B
     c_GetPhysMemProps(g_phys_dev, mp);
     unsigned ntypes = *(unsigned*)mp;
@@ -148,14 +162,9 @@ static void comp_create(void* dev, unsigned n) {
     for (unsigned i = 0; i < n; i++) {
         unsigned char ic[88]; memset(ic, 0, sizeof ic);   // VkImageCreateInfo
         *(unsigned*)(ic + 0) = 14; *(unsigned*)(ic + 20) = 1;
-        *(unsigned*)(ic + 24) = g_comp_mutable ? 44u : g_comp_fmt; // Native UE4 uses linear storage with an sRGB scene view.
-        _Alignas(8) unsigned char list[32]={0};unsigned view_formats[2]={44,50};
-        if (g_comp_mutable) {
-            *(unsigned*)list=1000147000u;*(unsigned*)(list+16)=2;
-            *(unsigned**)(list+24)=view_formats;
-            *(void**)(ic+8)=list;
-            *(unsigned*)(ic+16)=8; // Restrict mutable storage to the native linear/sRGB BGRA pair.
-        }
+        *(unsigned*)(ic + 24) = 44u; // Native UE4 uses linear storage with an sRGB scene view.
+        *(unsigned*)(ic+16)=8; // Core MUTABLE_FORMAT permits the native linear/sRGB BGRA views.
+        // Unrestricted mutable views avoid format-list-specific compression across the native MSAA resolve.
         *(unsigned*)(ic + 28) = g_comp_w; *(unsigned*)(ic + 32) = g_comp_h; *(unsigned*)(ic + 36) = 1;
         *(unsigned*)(ic + 40) = 1; *(unsigned*)(ic + 44) = 1; *(unsigned*)(ic + 48) = 1; *(unsigned*)(ic + 52) = 0;
         *(unsigned*)(ic + 56) = 0x10u | 0x1u | 0x2u | 0x4u | g_comp_usage_extra;   // COLOR_ATT|XFER_SRC|XFER_DST|SAMPLED

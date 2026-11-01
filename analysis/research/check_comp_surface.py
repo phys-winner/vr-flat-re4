@@ -17,13 +17,12 @@ for name,hook in (('vkGetPhysicalDeviceSurfaceFormatsKHR','h_vkSurfaceFormats'),
     assert 'return (void*)&'+hook in main
 swap_start=re.search(r'int h_vkCreateSwapchain\([^;{]*\)\s*\{',main).end()
 swap=main[swap_start:main.index('int h_vkQueueSubmit(',swap_start)]
+swap_function=main[re.search(r'int h_vkCreateSwapchain\([^;{]*\)\s*\{',main).start():main.index('int h_vkQueueSubmit(',swap_start)]
 assert 'r_vkSurfaceFormats(g_phys_dev, surface' in swap and 'h_vkSurfaceFormats(' not in swap
-assert 'g_comp_mutable=__atomic_load_n(&g_comp_format_list,__ATOMIC_ACQUIRE);' in comp
-assert '_Alignas(8) unsigned char list[32]={0};unsigned view_formats[2]={44,50};' in comp
-assert 'if (g_comp_mutable)' in comp and '*(unsigned*)(ic+16)=8;' in comp
-assert '*(unsigned*)list=1000147000u;*(unsigned*)(list+16)=2;' in comp
-assert '*(unsigned**)(list+24)=view_formats;' in comp and '*(void**)(ic+8)=list;' in comp
-assert '*(unsigned*)(ic + 24) = g_comp_mutable ? 44u : g_comp_fmt;' in comp
+assert 'g_comp_mutable=1;' in comp
+assert '*(unsigned*)(ic+16)=8;' in comp and '*(void**)(ic+8)=' not in comp
+assert 'format_list_enabled=%d restricted_views=0' in comp
+assert '*(unsigned*)(ic + 24) = 44u;' in comp
 device_start=re.search(r'int h_vkCreateDevice\([^;{]*\)\s*\{',main).end()
 device=main[device_start:main.index('#include "re4fix_comp.h"',device_start)]
 assert 'unsigned char copied_ci[72] __attribute__((aligned(8)));' in device and 'const char* names[257];' in device
@@ -33,17 +32,18 @@ fb_start=re.search(r'int h_vkCreateFB\([^;{]*\)\s*\{',main).end()
 fb=main[fb_start:main.index('static long g_exec_n;',fb_start)]
 assert fb.index('comp_linear_framebuffer(')<fb.index('ci=selected;')<fb.index('r_vkCreateFB(dev, ci, ac, out)')
 assert 'g_views[i].view=0' in main and 'comp_linear_view_destroyed(view);' in main and 'r_vkDestroyImageView(dev,view,allocator);' in main
-print('PASS: actual root include/procedure routes, aligned selected device CI prepare/original/capture/audit sequence, physical WSI bypass, capability-gated format-list44/50 and effective framebuffer CI/trace integration',flush=True)
-sources=[root/'analysis/research/test_comp_surface.c',root/'analysis/research/test_comp_factory.c']
+print('PASS: actual root include/procedure routes, aligned selected device CI prepare/original/capture/audit sequence, physical WSI bypass, core unrestricted mutable44/50 and effective framebuffer CI/trace integration',flush=True)
+sources=[root/'analysis/research/test_comp_surface.c',root/'analysis/research/test_comp_factory.c',root/'analysis/research/test_swapchain_pacing.c']
 clang=llvm/'clang.exe'
-for source in sources:
-    subprocess.run([str(clang),'--target=aarch64-linux-android23','-O2','-Werror','-fsyntax-only',str(source)],check=True)
 vc=Path(r'C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231')
 sdk=Path(r'C:\Program Files (x86)\Windows Kits\10')
 with tempfile.TemporaryDirectory(prefix='re4-comp-surface-') as temporary:
+    (Path(temporary)/'swapchain_root.h').write_text(swap_function,encoding='utf8')
     for source in sources:
+        subprocess.run([str(clang),'--target=aarch64-linux-android23','-O2','-Werror','-I',temporary,'-fsyntax-only',str(source)],check=True)
         obj,exe=Path(temporary)/(source.stem+'.obj'),Path(temporary)/(source.stem+'.exe')
         subprocess.run([str(clang),'--target=x86_64-pc-windows-msvc','-O2','-Werror',
+            '-I',temporary,
             '-isystem',str(vc/'include'),'-isystem',str(sdk/'Include/10.0.26100.0/ucrt'),
             '-idirafter',str(llvm.parent/'sysroot/usr/include'),'-c','-o',str(obj),str(source)],check=True)
         subprocess.run([str(vc/'bin/Hostx64/x64/link.exe'),'/NOLOGO',f'/OUT:{exe}',str(obj),

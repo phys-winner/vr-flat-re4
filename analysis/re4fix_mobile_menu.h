@@ -11,14 +11,46 @@
 #define RE4FIX_MOBILE_MENU_H
 
 // ---------------- persistent phone preferences (native owner) ----------------
-// Existing saved aim/quick-turn choices survive updates; new installations use hold-to-aim and no quick turn.
+// Existing saved aim/quick-turn choices survive updates; new installations use tap-to-aim and no quick turn.
 struct mobile_prefs { int sens, size, posx, posy, aim_toggle, fps_index, assist, fov, ads_zoom, qturn;
-    int aim_walk, intro_skip, start_confirm, hide_gamepad_hints, weapon_fov, gyro, gyro_sensitivity, aggression; int graphics[MG_COUNT]; };
-#define MOBILE_PREFS_DEFAULT {100, 100, 0, 0, 0, 2, 1, 90, 1, 0, 1, 0, 0, 0, 90, 1, 100, 0}
+    int aim_walk, intro_skip, start_confirm, hide_gamepad_hints, weapon_fov, gyro, gyro_sensitivity, aggression; int graphics[MG_COUNT];
+    int render_scale, fps_milli; };
+#define MOBILE_PREFS_DEFAULT {100, 100, 0, 0, 1, 2, 1, 90, 1, 0, 1, 0, 0, 0, 90, 1, 100, 0, {0}, 100, 0}
 static const struct mobile_prefs mobile_prefs_default = MOBILE_PREFS_DEFAULT;
 static struct mobile_prefs g_mprefs = MOBILE_PREFS_DEFAULT;
 static volatile int g_display_milli_hz = 60000;
+// Eight sorted refresh rates in Hz, published together by the Android display listener.
+static uint64_t g_display_modes = 60;
+static int g_mobile_target_milli = 60000;
+static const int mobile_render_scales[] = {50, 67, 75, 85, 100};
 static const char mobile_prefs_path[] = "/data/data/com.Armature.VR4/re4_mobile_prefs_v2";
+
+static int mobile_fps_modes(int* rates) {
+    uint64_t packed = __atomic_load_n(&g_display_modes, __ATOMIC_ACQUIRE);
+    int count = 0;
+    for (unsigned i = 0; i < 8; ++i, packed >>= 8) {
+        int rate = (int)(packed & 255);
+        if (rate > 60 && rate <= 240) rates[count++] = rate * 1000;
+    }
+    return count;
+}
+static int mobile_display_max(void) {
+    int rates[8], count = mobile_fps_modes(rates);
+    return count ? rates[count - 1] : 60000;
+}
+static int mobile_fps_index(void) {
+    if (g_mprefs.fps_milli) {
+        int rates[8], count = mobile_fps_modes(rates);
+        for (int i = 0; i < count; ++i) if (rates[i] == g_mprefs.fps_milli) return i + 4;
+        return 2;
+    }
+    return g_mprefs.fps_index;
+}
+static int mobile_render_index(void) {
+    for (unsigned i = 0; i < sizeof mobile_render_scales / sizeof *mobile_render_scales; ++i)
+        if (g_mprefs.render_scale == mobile_render_scales[i]) return (int)i;
+    return 4;
+}
 
 static int mprefs_clamp(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 static void mobile_prefs_sanitize(struct mobile_prefs* p) {
@@ -32,12 +64,19 @@ static void mobile_prefs_sanitize(struct mobile_prefs* p) {
     p->weapon_fov = mprefs_clamp(p->weapon_fov, 60, 110);
     p->aggression = mprefs_clamp(p->aggression, 0, 1);
     p->gyro = mprefs_clamp(p->gyro, 0, 1); p->gyro_sensitivity = mprefs_clamp(p->gyro_sensitivity, 25, 300);
+    int valid_scale = 0;
+    for (unsigned i = 0; i < sizeof mobile_render_scales / sizeof *mobile_render_scales; ++i)
+        if (p->render_scale == mobile_render_scales[i]) valid_scale = 1;
+    if (!valid_scale) p->render_scale = 100;
+    if (p->fps_milli <= 60000 || p->fps_milli > 240000 || p->fps_milli % 1000) p->fps_milli = 0;
     for (int i = 0; i < MG_COUNT; ++i) p->graphics[i] = mprefs_clamp(p->graphics[i], 0, mobile_graphics_options[i].count - 1);
 }
 static void mobile_prefs_publish(void) {
     static const int fps[3] = {30000, 45000, 60000};
-    int hz = __atomic_load_n(&g_display_milli_hz, __ATOMIC_ACQUIRE);
-    int target = g_mprefs.fps_index < 3 ? fps[g_mprefs.fps_index] : (hz >= 24000 && hz <= 240000 ? hz : 60000);
+    int index = mobile_fps_index(), rates[8];
+    int count = mobile_fps_modes(rates);
+    int target = index < 3 ? fps[index] : index == 3 ? mobile_display_max() : index - 4 < count ? rates[index - 4] : 60000;
+    __atomic_store_n(&g_mobile_target_milli, target, __ATOMIC_RELEASE);
     (void)touch_mobile_settings_apply(g_mprefs.sens * 10, g_mprefs.size * 10, g_mprefs.posx * 10, g_mprefs.posy * 10, target);
 }
 static void mobile_prefs_load(void) {
@@ -60,6 +99,8 @@ static void mobile_prefs_load(void) {
                 else if (!strcmp(key, "hidepad")) p.hide_gamepad_hints = value; else if (!strcmp(key, "wfov")) p.weapon_fov = value;
                 else if (!strcmp(key, "aggression")) p.aggression = value;
                 else if (!strcmp(key, "gyro")) p.gyro = value; else if (!strcmp(key, "gyrosens")) p.gyro_sensitivity = value;
+                else if (!strcmp(key, "renderscale")) p.render_scale = value;
+                else if (!strcmp(key, "fpsmilli")) p.fps_milli = value;
                 else for (int i = 0; i < MG_COUNT; ++i) if (!strcmp(key, mobile_graphics_options[i].key)) p.graphics[i] = value;
             }
         }
@@ -74,10 +115,10 @@ static void mobile_prefs_load(void) {
 static void mobile_prefs_save(void) {
     char buf[512];
     int n = snprintf(buf, sizeof buf, "sens=%d\nsize=%d\nposx=%d\nposy=%d\naim=%d\nfps=%d\n"
-                     "assist=%d\nfov=%d\nadsz=%d\nqturn=%d\naimwalk=%d\nintroskip=%d\nstartconfirm=%d\nhidepad=%d\nwfov=%d\ngyro=%d\ngyrosens=%d\naggression=%d\n",
+                     "assist=%d\nfov=%d\nadsz=%d\nqturn=%d\naimwalk=%d\nintroskip=%d\nstartconfirm=%d\nhidepad=%d\nwfov=%d\ngyro=%d\ngyrosens=%d\naggression=%d\nrenderscale=%d\nfpsmilli=%d\n",
                      g_mprefs.sens, g_mprefs.size, g_mprefs.posx, g_mprefs.posy, g_mprefs.aim_toggle, g_mprefs.fps_index,
                      g_mprefs.assist, g_mprefs.fov, g_mprefs.ads_zoom, g_mprefs.qturn,
-                     g_mprefs.aim_walk, g_mprefs.intro_skip, g_mprefs.start_confirm, g_mprefs.hide_gamepad_hints, g_mprefs.weapon_fov, g_mprefs.gyro, g_mprefs.gyro_sensitivity, g_mprefs.aggression);
+                     g_mprefs.aim_walk, g_mprefs.intro_skip, g_mprefs.start_confirm, g_mprefs.hide_gamepad_hints, g_mprefs.weapon_fov, g_mprefs.gyro, g_mprefs.gyro_sensitivity, g_mprefs.aggression, g_mprefs.render_scale, g_mprefs.fps_milli);
     if (n <= 0 || n >= (int)sizeof buf) return;
     for (int i = 0; i < MG_COUNT; ++i) {
         int extra = snprintf(buf + n, sizeof buf - (size_t)n, "%s=%d\n", mobile_graphics_options[i].key, g_mprefs.graphics[i]);
@@ -114,6 +155,7 @@ __attribute__((visibility("default")))
 void Java_com_epicgames_ue4_MobileSettings_nativeDisplay(void* env, void* type, int milli_hz) {
     (void)env; (void)type;
     if (milli_hz < 24000 || milli_hz > 240000) return;
+    touch_mobile_settings_display(milli_hz);
     __atomic_store_n(&g_display_milli_hz, milli_hz, __ATOMIC_RELEASE);
     mobile_prefs_publish();
 }
@@ -122,6 +164,33 @@ void Java_com_epicgames_ue4_MobileSettings_nativeDensity(void* env, void* type, 
     (void)env; (void)type;
     if (milli_density >= 500 && milli_density <= 8000)
         __atomic_store_n(&g_touch_density_milli, milli_density, __ATOMIC_RELEASE);
+}
+__attribute__((visibility("default")))
+void Java_com_epicgames_ue4_MobileSettings_nativeDisplayModes(void* env, void* type, int64_t modes) {
+    (void)env; (void)type;
+    uint64_t packed = (uint64_t)modes;
+    int previous = 0;
+    for (unsigned i = 0; i < 8; ++i) {
+        int rate = (int)((packed >> (i * 8)) & 255);
+        if (!rate) { if (packed >> (i * 8)) return; break; }
+        if (rate < 24 || rate > 240 || rate <= previous) return;
+        previous = rate;
+    }
+    if (!previous) return;
+    __atomic_store_n(&g_display_modes, packed, __ATOMIC_RELEASE);
+    mobile_prefs_publish();
+}
+__attribute__((visibility("default")))
+int Java_com_epicgames_ue4_MobileSettings_nativeFrameLimit(void* env, void* type) {
+    (void)env; (void)type;
+    return __atomic_load_n(&g_mobile_target_milli, __ATOMIC_ACQUIRE);
+}
+__attribute__((visibility("default")))
+int Java_com_epicgames_ue4_MobileSettings_nativeRenderPercent(void* env, void* type) {
+    (void)env; (void)type;
+    static int startup_scale;
+    if (!startup_scale) { mobile_prefs_load(); startup_scale = g_mprefs.render_scale; }
+    return startup_scale;
 }
 
 // ---------------- engine ABI used to build menu rows ----------------
@@ -242,7 +311,8 @@ enum { L_TITLE, L_SENS, L_SIZE, L_POSX, L_POSY, L_AIM, L_AIM_HOLD, L_AIM_TAP, L_
        L_D_GRAPHICS, L_D_GANISO, L_D_GMIP, L_D_GVIEW, L_D_GSTATIC, L_D_GSKEL, L_D_GSHADOW,
        L_AIM_WALK, L_INTRO_SKIP, L_START_CONFIRM, L_HIDE_PAD, L_WEAPON_FOV,
        L_D_AIM_WALK, L_D_INTRO_SKIP, L_D_START_CONFIRM, L_D_HIDE_PAD, L_D_WEAPON_FOV,
-       L_D_X_WEAPONS, L_D_X_MODES, L_X_PENDING, L_X_RETRY, L_GYRO, L_GYRO_SENS, L_D_GYRO, L_D_GYRO_SENS, L_AGGRESSION, L_D_AGGRESSION, L_LANGUAGE, L_D_LANGUAGE, L_COUNT };
+       L_D_X_WEAPONS, L_D_X_MODES, L_X_PENDING, L_X_RETRY, L_GYRO, L_GYRO_SENS, L_D_GYRO, L_D_GYRO_SENS, L_AGGRESSION, L_D_AGGRESSION, L_LANGUAGE, L_D_LANGUAGE,
+       L_LAYOUT, L_D_LAYOUT, L_SCALE, L_D_SCALE, L_COUNT };
 static const char* const mm_text_en[L_COUNT] = {
     "Touch controls", "Camera sensitivity", "Button size", "Buttons: horizontal shift", "Buttons: vertical shift",
     "Aiming", "Hold", "Tap", "Frame limit", "Display", "Off", "On",
@@ -251,7 +321,7 @@ static const char* const mm_text_en[L_COUNT] = {
     "Special modes", "Available",
     "Speed of looking around with a finger swipe.", "Size of the on-screen buttons.",
     "Moves the on-screen buttons together.", "Hold: aim while the button is held. Tap: tap once to aim, tap again to stop.",
-    "Maximum frame rate. Display uses the current refresh rate of the screen.",
+    "Maximum frame rate. Display uses the highest supported refresh rate of the screen.",
     "Camera bobbing while walking.", "Phone vibration for shots, hits and other game effects.",
     "Import or export save files and choose the interface language.",
     "Unlock bonus content through the game's own unlock functions.",
@@ -282,7 +352,9 @@ static const char* const mm_text_en[L_COUNT] = {
     "Turn the phone to fine-tune your aim while Aim is held. Swipe controls remain available.",
     "Sensitivity of gyroscope aiming, from 25 to 300 percent.", "Aggressive enemies",
     "Ganados pursue and attack more often using the original highest AI aggression. Turn off to restore their original behaviour.",
-    "Language", "Choose the interface language. Changes apply at the next game launch." };
+    "Language", "Choose the interface language. Changes apply at the next game launch.",
+    "Edit button layout", "Drag, resize or hide touch controls, including the second Fire button on the left. Save or cancel in the layout editor.",
+    "Render scale", "Resolution relative to the screen. Lower values reduce GPU load. Applies at the next game launch." };
 static const char* const mm_text_ru[L_COUNT] = {
     "Сенсорное управление", "Чувствительность камеры", "Размер кнопок", "Сдвиг кнопок по горизонтали",
     "Сдвиг кнопок по вертикали", "Прицеливание", "Удержание", "Нажатие", "Ограничение кадров", "Экран",
@@ -291,7 +363,7 @@ static const char* const mm_text_ru[L_COUNT] = {
     "Бонусное оружие", "Особые режимы", "Доступно",
     "Скорость поворота камеры свайпом.", "Размер экранных кнопок.", "Сдвигает все экранные кнопки вместе.",
     "Удержание: прицел, пока кнопка зажата. Нажатие: одно касание включает прицел, повторное — выключает.",
-    "Максимальная частота кадров. «Экран» — текущая частота обновления дисплея.",
+    "Максимальная частота кадров. «Экран» — максимальная поддерживаемая частота обновления дисплея.",
     "Покачивание камеры при ходьбе.", "Вибрация телефона при выстрелах, попаданиях и других игровых эффектах.",
     "Импорт и экспорт сохранений, выбор языка интерфейса.",
     "Открыть бонусный контент штатными функциями игры.",
@@ -322,7 +394,9 @@ static const char* const mm_text_ru[L_COUNT] = {
     "Поворачивайте телефон для точного наведения при включённом прицеле. Свайпы также работают.",
     "Чувствительность прицеливания гироскопом от 25 до 300 процентов.", "Агрессивные противники",
     "Ганадо чаще преследуют и атакуют, используя исходную максимальную агрессивность ИИ. Выключите, чтобы вернуть обычное поведение.",
-    "Язык", "Выберите язык интерфейса. Изменение применяется при следующем запуске игры." };
+    "Язык", "Выберите язык интерфейса. Изменение применяется при следующем запуске игры.",
+    "Расположение кнопок", "Перемещение, размер и видимость кнопок, включая вторую кнопку огня слева. В редакторе есть сохранение и отмена.",
+    "Масштаб рендера", "Разрешение относительно экрана. Меньшие значения снижают нагрузку на графику. Применяется при следующем запуске игры." };
 static const char* const* mm_strings(void) {
     const char* lang = mobile_android_language();
     return lang && lang[0] == 'r' && lang[1] == 'u' ? mm_text_ru : mm_text_en;
@@ -331,7 +405,7 @@ static const char* const* mm_strings(void) {
 // ---------------- names ----------------
 static struct {
     unsigned long long none, top, load_link, menu, menu_link, extras, extras_link, comfort, audio, graphics, language;
-    unsigned long long p_sens, p_size, p_posx, p_posy, p_aim, p_fps, p_files, p_language, p_x[5];
+    unsigned long long p_sens, p_size, p_posx, p_posy, p_aim, p_fps, p_files, p_language, p_layout, p_scale, p_x[5];
     unsigned long long p_bob, p_rumble, p_extras_open, p_graphics_open, p_graphics[MG_COUNT];
     unsigned long long p_assist, p_fov, p_adsz, p_qturn, p_aim_walk, p_intro_skip, p_start_confirm, p_hide_pad, p_weapon_fov, p_tutorial, p_gyro, p_gyro_sens, p_aggression;
     unsigned long long f_get, f_apply, f_get_slider, f_apply_slider, f_disp_pct, f_disp_val, f_language_get, f_language_apply;
@@ -363,6 +437,7 @@ static void mm_names(void) {
     mn.p_sens = mm_fname("MobileCameraSensitivity"); mn.p_size = mm_fname("MobileButtonSize");
     mn.p_posx = mm_fname("MobileButtonOffsetX"); mn.p_posy = mm_fname("MobileButtonOffsetY");
     mn.p_aim = mm_fname("MobileAimMode"); mn.p_fps = mm_fname("MobileFrameLimit");
+    mn.p_layout = mm_fname("MobileTouchLayout"); mn.p_scale = mm_fname("MobileRenderScale");
     mn.p_files = mm_fname("MobileSaveFiles"); mn.p_extras_open = mm_fname("MobileExtrasOpen");
     for (int i = 0; i < 5; i++) { char key[32]; snprintf(key, sizeof key, "MobileExtra%d", i + 1); mn.p_x[i] = mm_fname(key); }
     mn.p_bob = mm_fname("EnableCameraBobbing"); mn.p_rumble = mm_fname("EnableControllerRumble");
@@ -434,16 +509,19 @@ static void mm_inject(void* component) {
     const char* const* t = mm_strings();
     const char* off_on[2] = {t[L_OFF], t[L_ON]};
     const char* aim[2] = {t[L_AIM_HOLD], t[L_AIM_TAP]};
-    const char* fps[4] = {"30", "45", "60", t[L_FPS_DISPLAY]};
+    const char* fps[12] = {"30", "45", "60", t[L_FPS_DISPLAY]};
+    int rates[8], rate_count = mobile_fps_modes(rates);
+    char rate_labels[8][8];
+    for (int i = 0; i < rate_count; ++i) {
+        snprintf(rate_labels[i], sizeof rate_labels[i], "%d", rates[i] / 1000);
+        fps[i + 4] = rate_labels[i];
+    }
     unsigned long long M = mn.comfort;   // the original dynamic "Controls / Camera" list
+    const char* edit[2] = {t[L_OPEN], t[L_OPEN]};
+    mm_row(component, "MobileTouchLayout", 3, M, mn.none, mn.p_layout, 0, 1, 1, mn.f_get, mn.f_apply,
+           mn.none, t[L_LAYOUT], t[L_D_LAYOUT], edit, 2);
     mm_row(component, "MobileSensitivity", 4, M, mn.none, mn.p_sens, 50, 200, 5, mn.f_get_slider, mn.f_apply_slider,
            mn.f_disp_pct, t[L_SENS], t[L_D_SENS], 0, 0);
-    mm_row(component, "MobileButtonSize", 4, M, mn.none, mn.p_size, 75, 125, 5, mn.f_get_slider, mn.f_apply_slider,
-           mn.f_disp_pct, t[L_SIZE], t[L_D_SIZE], 0, 0);
-    mm_row(component, "MobileButtonOffsetX", 4, M, mn.none, mn.p_posx, -8, 8, 1, mn.f_get_slider, mn.f_apply_slider,
-           mn.f_disp_val, t[L_POSX], t[L_D_POS], 0, 0);
-    mm_row(component, "MobileButtonOffsetY", 4, M, mn.none, mn.p_posy, -8, 8, 1, mn.f_get_slider, mn.f_apply_slider,
-           mn.f_disp_val, t[L_POSY], t[L_D_POS], 0, 0);
     mm_row(component, "MobileAimMode", 3, M, mn.none, mn.p_aim, 0, 1, 1, mn.f_get, mn.f_apply, mn.none, t[L_AIM], t[L_D_AIM], aim, 2);
     mm_row(component, "MobileAimWalk", 3, M, mn.none, mn.p_aim_walk, 0, 1, 1, mn.f_get, mn.f_apply, mn.none, t[L_AIM_WALK], t[L_D_AIM_WALK], off_on, 2);
     mm_row(component, "MobileGyro", 3, M, mn.none, mn.p_gyro, 0, 1, 1, mn.f_get, mn.f_apply, mn.none, t[L_GYRO], t[L_D_GYRO], off_on, 2);
@@ -453,7 +531,7 @@ static void mm_inject(void* component) {
     mm_row(component, "MobileAimAssist", 3, M, mn.none, mn.p_assist, 0, 1, 1, mn.f_get, mn.f_apply, mn.none, t[L_ASSIST], t[L_D_ASSIST], off_on, 2);
     mm_row(component, "MobileAimZoom", 3, M, mn.none, mn.p_adsz, 0, 1, 1, mn.f_get, mn.f_apply, mn.none, t[L_ADSZ], t[L_D_ADSZ], off_on, 2);
     mm_row(component, "MobileQuickTurn", 3, M, mn.none, mn.p_qturn, 0, 1, 1, mn.f_get, mn.f_apply, mn.none, t[L_QTURN], t[L_D_QTURN], off_on, 2);
-    mm_row(component, "MobileFrameLimit", 3, M, mn.none, mn.p_fps, 0, 1, 1, mn.f_get, mn.f_apply, mn.none, t[L_FPS], t[L_D_FPS], fps, 4);
+    mm_row(component, "MobileFrameLimit", 3, M, mn.none, mn.p_fps, 0, 1, 1, mn.f_get, mn.f_apply, mn.none, t[L_FPS], t[L_D_FPS], fps, 4 + rate_count);
     mm_row(component, "MobileCameraBob", 3, M, mn.none, mn.p_bob, 0, 1, 1, mn.f_get, mn.f_apply, mn.none, t[L_BOB], t[L_D_BOB], off_on, 2);
     mm_row(component, "MobileRumble", 3, M, mn.none, mn.p_rumble, 0, 1, 1, mn.f_get, mn.f_apply, mn.none, t[L_RUMBLE], t[L_D_RUMBLE], off_on, 2);
     mm_row(component, "MobileIntroSkip", 3, M, mn.none, mn.p_intro_skip, 0, 1, 1, mn.f_get, mn.f_apply, mn.none, t[L_INTRO_SKIP], t[L_D_INTRO_SKIP], off_on, 2);
@@ -511,6 +589,9 @@ static void mm_inject_graphics(void* component) {
     // Menu declarations grow Menus: add them after the authored AddEntries loop, like the extras list.
     mm_row(component, "MobileGraphics", 0, mn.none, mn.audio, mn.none, 0, 1, 1, mn.none, mn.none, mn.none,
            t[L_GRAPHICS], "", 0, 0);
+    const char* scales[] = {"50%", "67%", "75%", "85%", "100%"};
+    mm_row(component, "MobileRenderScale", 3, mn.graphics, mn.none, mn.p_scale, 0, 1, 1, mn.f_get, mn.f_apply,
+           mn.none, t[L_SCALE], t[L_D_SCALE], scales, 5);
     mm_row(component, "MobileFieldOfView", 4, mn.graphics, mn.none, mn.p_fov, 70, 110, 5, mn.f_get_slider, mn.f_apply_slider,
            mn.f_disp_val, t[L_FOV], t[L_D_FOV], 0, 0);
     mm_row(component, "MobileWeaponFieldOfView", 4, mn.graphics, mn.none, mn.p_weapon_fov, 60, 110, 5, mn.f_get_slider, mn.f_apply_slider,
@@ -595,7 +676,7 @@ static int mm_own(const unsigned char* desc) {
     unsigned long long p = mm_u64(desc + 0x48);
     for (int i = 0; i < 5; ++i) if (p == mn.p_x[i]) return 1;
     return p == mn.p_sens || p == mn.p_size || p == mn.p_posx || p == mn.p_posy || p == mn.p_aim || p == mn.p_fps
-        || p == mn.p_files || p == mn.p_language || p == mn.p_extras_open || p == mn.p_assist || p == mn.p_fov || p == mn.p_adsz
+        || p == mn.p_files || p == mn.p_language || p == mn.p_layout || p == mn.p_scale || p == mn.p_extras_open || p == mn.p_assist || p == mn.p_fov || p == mn.p_adsz
         || p == mn.p_qturn || p == mn.p_graphics_open || p == mn.p_aim_walk || p == mn.p_intro_skip
         || p == mn.p_start_confirm || p == mn.p_hide_pad || p == mn.p_weapon_fov || p == mn.p_gyro || p == mn.p_gyro_sens || p == mn.p_aggression;
 }
@@ -620,7 +701,7 @@ int hook_opt_get(void* self, const unsigned char* desc) {
             mm_bind_extras(self);
             return mm_extras_value(touch_mobile_extras_snapshot(), i + 1);
         }
-        return p == mn.p_aim ? g_mprefs.aim_toggle : p == mn.p_fps ? g_mprefs.fps_index
+        return p == mn.p_aim ? g_mprefs.aim_toggle : p == mn.p_fps ? mobile_fps_index() : p == mn.p_scale ? mobile_render_index()
             : p == mn.p_assist ? g_mprefs.assist : p == mn.p_adsz ? g_mprefs.ads_zoom : p == mn.p_qturn ? g_mprefs.qturn
             : p == mn.p_aim_walk ? g_mprefs.aim_walk : p == mn.p_intro_skip ? g_mprefs.intro_skip
             : p == mn.p_start_confirm ? g_mprefs.start_confirm : p == mn.p_hide_pad ? g_mprefs.hide_gamepad_hints : p == mn.p_gyro ? g_mprefs.gyro : p == mn.p_aggression ? g_mprefs.aggression : 0;
@@ -650,7 +731,8 @@ void hook_opt_apply(void* self, const unsigned char* desc, int value) {
             return;
         }
         // Native reset replays Get/Apply for every row; opening another screen is not a setting reset.
-        if (mm_reset_replay && (p == mn.p_files || p == mn.p_language || p == mn.p_extras_open || p == mn.p_graphics_open)) return;
+        if (mm_reset_replay && (p == mn.p_files || p == mn.p_language || p == mn.p_layout || p == mn.p_extras_open || p == mn.p_graphics_open)) return;
+        if (p == mn.p_layout) { mobile_android_request_layout(); return; }
         if (p == mn.p_files) { if (mm_show_files) mm_show_files(); LOGF("MOBILEMENU save files/language requested"); return; }
         if (p == mn.p_language) { if (mm_show_language) mm_show_language(); LOGF("MOBILEMENU language picker requested"); return; }
         if (p == mn.p_extras_open || p == mn.p_graphics_open) {   // navigate after the click handler returns (menu hand tick)
@@ -660,7 +742,15 @@ void hook_opt_apply(void* self, const unsigned char* desc, int value) {
             __atomic_store_n(&mm_pending_menu_ms, ptr_now_ms(), __ATOMIC_RELEASE);
             return;
         }
-        if (p == mn.p_aim) g_mprefs.aim_toggle = value; else if (p == mn.p_fps) g_mprefs.fps_index = value;
+        if (p == mn.p_fps) {
+            int rates[8], count = mobile_fps_modes(rates);
+            if (value < 0 || value >= 4 + count) return;
+            g_mprefs.fps_index = value < 4 ? value : 2;
+            g_mprefs.fps_milli = value < 4 ? 0 : rates[value - 4];
+        } else if (p == mn.p_scale) {
+            if (value < 0 || value >= (int)(sizeof mobile_render_scales / sizeof *mobile_render_scales)) return;
+            g_mprefs.render_scale = mobile_render_scales[value];
+        } else if (p == mn.p_aim) g_mprefs.aim_toggle = value;
         else if (p == mn.p_assist) g_mprefs.assist = value;
         else if (p == mn.p_adsz) g_mprefs.ads_zoom = value; else if (p == mn.p_qturn) g_mprefs.qturn = value;
         else if (p == mn.p_aim_walk) g_mprefs.aim_walk = value; else if (p == mn.p_intro_skip) g_mprefs.intro_skip = value;
@@ -716,12 +806,14 @@ void hook_opt_reset(void* self, unsigned long long menu) {
         memcpy(reset.graphics, g_mprefs.graphics, sizeof reset.graphics);
         reset.fov = g_mprefs.fov;
         reset.weapon_fov = g_mprefs.weapon_fov;
+        reset.render_scale = g_mprefs.render_scale;
         g_mprefs = reset; mobile_prefs_save(); mobile_prefs_publish();
     }
     if (mn.ready && (menu == mn.graphics || menu == mn.audio)) {
         for (int i = 0; i < MG_COUNT; ++i) { g_mprefs.graphics[i] = 0; (void)mobile_graphics_select(i, 0); }
         g_mprefs.fov = mobile_prefs_default.fov;
         g_mprefs.weapon_fov = mobile_prefs_default.weapon_fov;
+        g_mprefs.render_scale = mobile_prefs_default.render_scale;
         mobile_prefs_save();
         if (menu == mn.graphics) {
             void* component = self ? *(void**)((char*)self + 0x258) : 0;

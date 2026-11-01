@@ -30,7 +30,18 @@ assert any(m.get(android+'name')=='com.epicgames.ue4.GameActivity.bSupportsVulka
 for thunk, target in (('ShowMobileFiles', 'showFiles'), ('ShowMobileLanguage', 'showLanguage')):
     expected = '.method public AndroidThunkJava_'+thunk+'()V\n    .locals 0\n    invoke-static {p0}, Lcom/epicgames/ue4/MobileAndroid;->'+target+'(Landroid/app/Activity;)V\n    return-void\n.end method'
     assert activity.count(expected)==1, thunk
+layout_thunk = '.method public AndroidThunkJava_OpenTouchLayout()V\n    .locals 0\n    invoke-static {p0}, Lcom/epicgames/ue4/MobileControls;->open(Landroid/app/Activity;)V\n    return-void\n.end method'
+assert activity.count(layout_thunk)==1
+changed=re.search(r'\.method public surfaceChanged\(Landroid/view/SurfaceHolder;III\)V\n(.*?)\.end method',activity,re.S).group(1)
+size_call='Lcom/epicgames/ue4/MobileSettings;->surfaceSize(Landroid/app/Activity;Landroid/view/SurfaceView;II)[I'
+assert changed.count(size_call)==1
+assert changed.index(size_call)<changed.index('aget p3, v0, v1')<changed.index('aget p4, v0, v1')
+assert changed.index('aget p4, v0, v1')<changed.index('Landroid/app/NativeActivity;->surfaceChanged')<changed.index('Landroid/view/SurfaceHolder;->setFixedSize(II)V')<changed.index('->nativeSetSurfaceViewInfo(II)V')
+android_source=(ROOT/'analysis/android/com/epicgames/ue4/MobileAndroid.java').read_text(encoding='utf8')
+recover=android_source.split('public static void recoverSaves(Context context)',1)[1].split('\n    /**',1)[0]
+assert recover.index('nativeExternalRoot(')<recover.index('MobileControls.load(context);')<recover.index('nativeBind();')
 print('PASS: main Window RGBA8888 exactly once after takeSurface(NULL), before SurfaceView creation; hardware Canvas and separate native SurfaceView callbacks/format/Vulkan remain enabled',flush=True)
+print('PASS: one native touch-editor thunk, layout loads after verified external root, scaled surface callback shares returned dimensions with NativeActivity/holder/native viewport',flush=True)
 SOURCES = {
     'android/R.java': 'package android; public final class R {public static final class string {public static final int ok=1;}}',
     'android/app/LocaleManager.java': '''package android.app;
@@ -61,6 +72,7 @@ public final class LocaleManager {
     'android/window/OnBackInvokedDispatcher.java': 'package android.window; public final class OnBackInvokedDispatcher { public static final int PRIORITY_DEFAULT=0; public int registers,unregisters; public OnBackInvokedCallback callback; public void registerOnBackInvokedCallback(int priority,OnBackInvokedCallback c){if(priority!=0||callback!=null)throw new AssertionError();callback=c;registers++;} public void unregisterOnBackInvokedCallback(OnBackInvokedCallback c){if(callback!=c)throw new AssertionError();callback=null;unregisters++;} }',
     'com/epicgames/ue4/GameActivity.java': 'package com.epicgames.ue4; public final class GameActivity extends android.app.Activity {}',
     'com/epicgames/ue4/MobileSettings.java': 'package com.epicgames.ue4; public final class MobileSettings { public static void pause(android.app.Activity activity) {} }',
+    'com/epicgames/ue4/MobileControls.java': 'package com.epicgames.ue4; public final class MobileControls { public static void load(android.content.Context context) {} }',
     'com/epicgames/ue4/MobileFilesActivity.java': 'package com.epicgames.ue4; public final class MobileFilesActivity {}',
 }
 

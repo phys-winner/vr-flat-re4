@@ -10,8 +10,16 @@ static void* (*mobile_fps_find)(void*,const unsigned short*,int);
 static float (*mobile_fps_get)(const void*);
 static void (*mobile_fps_set)(void*,const unsigned short*,unsigned);
 static uintptr_t mobile_fps_base;
-static int mobile_fps_applied;
+static int mobile_fps_applied,mobile_fps_applied_native;
+static int mobile_fps_display_milli,mobile_fps_fifo;
 static unsigned mobile_fps_logs;
+static void touch_mobile_settings_display(int milli_hz) {
+    if(milli_hz<24000 || milli_hz>240000)milli_hz=0;
+    __atomic_store_n(&mobile_fps_display_milli,milli_hz,__ATOMIC_RELEASE);
+}
+static void touch_mobile_settings_fifo(int enabled) {
+    __atomic_store_n(&mobile_fps_fifo,enabled==1,__ATOMIC_RELEASE);
+}
 static int touch_mobile_settings_apply(int sensitivity,int size,int x,int y,int fps) {
     if(sensitivity<500 || sensitivity>2000 || size<750 || size>1250
         || x<-80 || x>80 || y<-80 || y>80 || fps<24000 || fps>240000)return 0;
@@ -27,7 +35,7 @@ static struct touch_mobile_settings touch_mobile_settings_snapshot(void) {
     return value;
 }
 static void install_touch_mobile_settings(uintptr_t base) {
-    mobile_fps_base=0;mobile_fps_applied=0;
+    mobile_fps_base=0;mobile_fps_applied=mobile_fps_applied_native=0;
     if(!base)return;
     static const struct {unsigned long addr;unsigned first[2];} code[]={
         {0x65e9ba0,{0xf81e0ff3,0xa9017bfd}},
@@ -47,28 +55,33 @@ static void touch_mobile_settings_tick(void) {
     if(!mobile_fps_base || !cinema_on_game_thread())return;
     uint64_t packed=__atomic_load_n(&touch_settings_value,__ATOMIC_ACQUIRE);
     int target=(int)((packed>>38)&262143);
-    if(target==mobile_fps_applied)return;
+    int display=__atomic_load_n(&mobile_fps_display_milli,__ATOMIC_ACQUIRE);
+    int fifo=__atomic_load_n(&mobile_fps_fifo,__ATOMIC_ACQUIRE);
+    // FIFO already bounds presentation when its known current refresh does not exceed the selected limit.
+    int native_target=fifo && display && target>=display?0:target;
+    if(target==mobile_fps_applied && native_target==mobile_fps_applied_native)return;
     void* manager=*(void**)(mobile_fps_base+0xa6b1ac0);
     if(!manager)return;
     static const unsigned short name[]={'t','.','M','a','x','F','P','S',0};
     void* var=mobile_fps_find(manager,name,0);
     if(!var || *(uintptr_t*)var!=mobile_fps_base+0x9e20df8)return;
     unsigned flags=*(const unsigned*)((const char*)var+0x18);
-    float before=mobile_fps_get(var),wanted=(float)target/1000.0f;
-    if(!isfinite(before) || before<0 || before>1000 || (flags&4u)
+    float before=mobile_fps_get(var),wanted=(float)native_target/1000.0f;
+    if(!isfinite(before) || before<0 || before>1000 || (flags&12u)
         || (flags&0xff000000u)>0x08000000u) {
-        mobile_fps_applied=target;
-        if(mobile_fps_logs<16){++mobile_fps_logs;LOGF("MOBILE FPS retained native=%.3f requested=%.3f flags=%08x",before,wanted,flags);}return;
+        mobile_fps_applied=target;mobile_fps_applied_native=native_target;
+        if(mobile_fps_logs<16){++mobile_fps_logs;LOGF("MOBILE FPS retained native=%.3f requested=%.3f flags=%08x",before,(float)target/1000.0f,flags);}return;
     }
-    if(fabsf(before-wanted)>0.0005f) {
+    if(fabsf(before-wanted)>0.0005f || (flags&0xff000000u)<0x08000000u) {
         char ascii[16];unsigned short value[16];
-        int n=snprintf(ascii,sizeof ascii,"%d.%03d",target/1000,target%1000);
+        int n=snprintf(ascii,sizeof ascii,"%d.%03d",native_target/1000,native_target%1000);
         if(n<=0 || n>=(int)sizeof ascii)return;
         for(int i=0;i<=n;i++)value[i]=(unsigned char)ascii[i];
         mobile_fps_set(var,value,0x08000000u);
     }
     float after=mobile_fps_get(var);
-    if(isfinite(after) && fabsf(after-wanted)<=0.0005f)mobile_fps_applied=target;
-    if(mobile_fps_logs<16){++mobile_fps_logs;LOGF("MOBILE FPS native t.MaxFPS %.3f -> %.3f requested=%.3f flags=%08x",before,after,wanted,flags);}
+    unsigned after_flags=*(const unsigned*)((const char*)var+0x18);
+    if(isfinite(after) && fabsf(after-wanted)<=0.0005f && (after_flags&0xff000000u)>=0x08000000u){mobile_fps_applied=target;mobile_fps_applied_native=native_target;}
+    if(mobile_fps_logs<16){++mobile_fps_logs;LOGF("MOBILE FPS native t.MaxFPS %.3f -> %.3f requested=%.3f flags=%08x displayMilliHz=%d FIFO=%d",before,after,(float)target/1000.0f,flags,display,fifo);}
 }
 #endif

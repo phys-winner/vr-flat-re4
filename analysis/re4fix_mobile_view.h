@@ -2,7 +2,14 @@
 #define RE4FIX_MOBILE_VIEW_H
 
 static float mobile_view_pitch(int context, float gameplay_pitch) {
+    if(context==8)return -5.0f*0.01745329252f; // Show the merchant shelf and sale table together.
     return context==2 || context==4 || context==5 || context==7 ? 0.0f : gameplay_pitch;
+}
+
+// Bring the native wrist display closer and toward the centre; its own mesh/size stay native.
+static void mobile_watch_offset(int side,float alpha,float off[3]) {
+    const float target[3]={side ? .10f : -.10f,.13f,-.24f};
+    for(int i=0;i<3;i++)off[i]+=(target[i]-off[i])*alpha;
 }
 
 static float mobile_phone_approach(long now, long started) {

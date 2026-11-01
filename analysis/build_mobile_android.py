@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 SDK = Path(os.environ['ANDROID_SDK_ROOT'])
 TOOLS = Path(os.environ['RE4_TOOLS_DIR'])
+BUILD_TOOLS = Path(os.environ.get('ANDROID_BUILD_TOOLS_ROOT', SDK / 'build-tools/36.0.0'))
 OUTPUT = ROOT / 'analysis/build/mobile-android-base.apk'
 RECEIPT = ROOT / 'analysis/research/mobile_android_build.json'
 
@@ -55,9 +56,9 @@ def main():
         compiled_classes=work/'classes.jar'
         with zipfile.ZipFile(compiled_classes,'w') as archive:
             for path in sorted(classes.rglob('*.class')):archive.write(path,path.relative_to(classes).as_posix())
-        run([SDK/'build-tools/36.0.0/d8.bat','--min-api','23','--lib',SDK/'platforms/android-36/android.jar','--output',dex_dir,compiled_classes])
+        run([BUILD_TOOLS/'d8.bat','--min-api','23','--lib',SDK/'platforms/android-36/android.jar','--output',dex_dir,compiled_classes])
         compiled=work/'compiled.apk'
-        run(['java','-jar',TOOLS/'apktool.jar','b','-f','-o',compiled,stage])
+        run(['java','-jar',TOOLS/'apktool.jar','b','-f','--aapt',BUILD_TOOLS/'aapt2.exe','-o',compiled,stage])
         with zipfile.ZipFile(compiled,'a') as archive:
             assert 'classes2.dex' not in archive.namelist()
             archive.write(dex_dir/'classes.dex','classes2.dex',compress_type=zipfile.ZIP_DEFLATED)
@@ -80,18 +81,21 @@ def main():
                 output.writestr(info,built.read(name))
     with zipfile.ZipFile(ROOT/'re4_p171i.apk') as original,zipfile.ZipFile(candidate) as built:
         assert len(set(built.namelist()))==len(built.namelist())
-        assert set(built.namelist())-set(original.namelist())=={'classes2.dex','res/xml/locales_config.xml','res/drawable-anydpi-v26/icon.xml','res/drawable-nodpi/launcher_foreground.png'}
+        added = set(built.namelist()) - set(original.namelist())
+        foregrounds = {'res/drawable-nodpi/launcher_foreground.png', 'res/drawable-nodpi-v4/launcher_foreground.png'}
+        assert len(added & foregrounds) == 1
+        assert added - foregrounds == {'classes2.dex','res/xml/locales_config.xml','res/drawable-anydpi-v26/icon.xml'}
         for name in original.namelist():
             if name.startswith(('lib/','assets/')) and name in built.namelist():assert original.read(name)==built.read(name),name
     def resource_ids(apk):
-        text = subprocess.check_output([str(SDK / 'build-tools/36.0.0/aapt2.exe'), 'dump', 'resources', str(apk)], text=True, encoding='utf-8')
+        text = subprocess.check_output([str(BUILD_TOOLS / 'aapt2.exe'), 'dump', 'resources', str(apk)], text=True, encoding='utf-8')
         return {name: number for number, name in re.findall(r'^\s*resource (0x[0-9a-f]+) (\S+)', text, re.M)}
     original_ids, final_ids = resource_ids(ROOT / 're4_p171i.apk'), resource_ids(candidate)
     assert all(original_ids.get(name) == number for name, number in final_ids.items() if name in original_ids), 'Retained Android resource IDs shifted'
     assert set(final_ids) - set(original_ids) == {'xml/locales_config','color/launcher_background','drawable/launcher_foreground'}
-    badging = subprocess.check_output([str(SDK / 'build-tools/36.0.0/aapt2.exe'), 'dump', 'badging', str(candidate)], text=True, encoding='utf-8')
+    badging = subprocess.check_output([str(BUILD_TOOLS / 'aapt2.exe'), 'dump', 'badging', str(candidate)], text=True, encoding='utf-8')
     assert "minSdkVersion:'23'" in badging and "targetSdkVersion:'37'" in badging
-    binary_manifest = subprocess.check_output([str(SDK / 'build-tools/36.0.0/aapt2.exe'), 'dump', 'xmltree', str(candidate), '--file', 'AndroidManifest.xml'], text=True, encoding='utf-8')
+    binary_manifest = subprocess.check_output([str(BUILD_TOOLS / 'aapt2.exe'), 'dump', 'xmltree', str(candidate), '--file', 'AndroidManifest.xml'], text=True, encoding='utf-8')
     start = binary_manifest.index('"com.epicgames.ue4.GameActivity"')
     following_activity = binary_manifest.find('E: activity ', start)
     game_binary = binary_manifest[start:following_activity if following_activity >= 0 else len(binary_manifest)]
@@ -101,7 +105,7 @@ def main():
     candidate.replace(OUTPUT)
     RECEIPT.write_text(json.dumps({'inputs': inputs, 'apk_sha256': hashlib.sha256(OUTPUT.read_bytes()).hexdigest(),
                                   'base': 're4_p171i.apk', 'resource_ids_retained': len(set(original_ids) & set(final_ids)),
-                                  'tools': {'apktool': str(TOOLS / 'apktool.jar'), 'platform': 'android-36', 'build_tools': '36.0.0'}}, indent=2) + '\n')
+                                  'tools': {'apktool': str(TOOLS / 'apktool.jar'), 'platform': 'android-36', 'build_tools': str(BUILD_TOOLS)}}, indent=2) + '\n')
     print('PASS: min23/target37, normal launcher+original engine category, original native dependencies byte-identical,', len(set(original_ids) & set(final_ids)), 'existing resource IDs retained; output', OUTPUT)
 
 

@@ -126,30 +126,34 @@ static int fv_click_component(void* component, void* screen) {
 }
 // Native widget rectangles include headings/body text; enabled button bounds alone omit that context.
 static struct cinema_ui_vec2 (*fv_current_draw_size)(const void*);
+static int fv_widget_plane(void* part,struct fv_plane* plane) {
+    if (!part || !plane || !pv_alive(part) || !cu_component_class || !cu_draw_size
+        || !menu_visual_layout(part,cu_component_class(),0x519)) return 0;
+    unsigned short flags=*(const unsigned short*)((const char*)part+0x14c);
+    if (!(flags&0x20) || (flags&0x400) || *(const unsigned char*)((const char*)part+0x429)
+        || *(const unsigned char*)((const char*)part+0x518)) return 0;
+    struct cinema_ui_vec2 size=fv_current_draw_size ? fv_current_draw_size(part):cu_draw_size(part);
+    const float* pivot=(const float*)((const char*)part+0x45c);
+    if (!(size.x>0 && size.x<=16384 && size.y>0 && size.y<=16384)
+        || !isfinite(pivot[0]) || !isfinite(pivot[1]) || pivot[0]<0 || pivot[0]>1 || pivot[1]<0 || pivot[1]>1) return 0;
+    memcpy(&plane->transform,(const char*)part+0x1c0,sizeof plane->transform);
+    plane->width=size.x;plane->height=size.y;
+    float local[3]={0,(pivot[0]-.5f)*size.x*plane->transform.s[1],
+        (pivot[1]-.5f)*size.y*plane->transform.s[2]},shift[3];
+    q_rot(plane->transform.q,local,shift);
+    for(unsigned k=0;k<3;k++)plane->transform.p[k]+=shift[k];
+    return 1;
+}
 static unsigned fv_collect_widgets(void* root, struct fv_plane* out, unsigned capacity) {
     if (!cu_component_class || !cu_draw_size) return 0;
     void* queue[256] = {root}; unsigned queued = 1, count = 0;
     for (unsigned i = 0; i < queued; i++) {
         void* part = queue[i];
         if (!part || !pv_alive(part) || !menu_visual_layout(part, mv_scene_class(), 0x1f0)) continue;
-        unsigned short flags = *(const unsigned short*)((const char*)part + 0x14c);
-        if ((flags & 0x20) && !(flags & 0x400) && menu_visual_layout(part, cu_component_class(), 0x519)
-            && !*(const unsigned char*)((const char*)part + 0x429)
-            && !*(const unsigned char*)((const char*)part + 0x518)) {
-            // DrawAtDesiredSize changes the rendered quad without updating the requested DrawSize.
-            struct cinema_ui_vec2 size = fv_current_draw_size ? fv_current_draw_size(part) : cu_draw_size(part);
-            const float* pivot = (const float*)((const char*)part + 0x45c);
-            if (size.x > 0 && size.x <= 16384 && size.y > 0 && size.y <= 16384
-                && isfinite(pivot[0]) && isfinite(pivot[1]) && pivot[0] >= 0 && pivot[0] <= 1 && pivot[1] >= 0 && pivot[1] <= 1) {
-                if (count == capacity) return capacity + 1;
-                struct fv_plane* p = out + count++;
-                memcpy(&p->transform, (const char*)part + 0x1c0, sizeof p->transform);
-                p->width = size.x; p->height = size.y;
-                float local[3] = {0, (pivot[0] - .5f) * size.x * p->transform.s[1],
-                                     (pivot[1] - .5f) * size.y * p->transform.s[2]}, shift[3];
-                q_rot(p->transform.q, local, shift);
-                for (unsigned k = 0; k < 3; k++) p->transform.p[k] += shift[k];
-            }
+        struct fv_plane plane;
+        if (fv_widget_plane(part,&plane)) {
+            if (count == capacity) return capacity + 1;
+            out[count++]=plane;
         }
         struct { void** data; int count, max; } children;
         memcpy(&children, (const char*)part + 0xd0, sizeof children);
@@ -692,7 +696,7 @@ static void install_flat_view(unsigned long base) {
     static const struct { unsigned long address; unsigned offset; } fields[] = {
         {0x9e0fbb0, 0x318}, {0x9e0fb88, 0x31c}, {0x9e10ed8, 0x308}, {0x9e10ea8, 0x310},
         {0xa0b7530, 0x130}, {0xa235ba8, 0xc0}, {0x9e11c48, 0x238},
-        {0x9e12a08, 0xa0}, {0x9f77c28, 0x45c}, {0x9f77e20, 0x429}, {0x9f77698, 0x518},
+        {0x9e12a08, 0xa0}, {0x9f77c28, 0x45c}, {0x9f77e20, 0x429}, {0x9f77698, 0x518}, {0x9f77670, 0x51c},
         {0x9e14028, 0x318}, {0x9e14000, 0x31c}, {0x9e0fb28, 0x320}, {0xa1087b8, 0x1f8},
     };
     int framing = 1;

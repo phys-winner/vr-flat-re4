@@ -11,9 +11,11 @@ enum { PAD_A, PAD_B, PAD_X, PAD_Y, PAD_LB, PAD_RB, PAD_L2, PAD_R2, PAD_L3, PAD_R
 static struct {
     float lx, ly, rx, ry, lt_axis, rt_axis, brake, gas, hatx, haty;
     unsigned buttons, pressed, released;   // PAD_* bits; pressed/released are edges consumed by the frame step
-    long last_ms;
 } g_pad;
 static pthread_mutex_t g_pad_mx = PTHREAD_MUTEX_INITIALIZER;
+static volatile long g_pad_last_ms;
+static int g_pad_device = -1;
+static volatile unsigned g_pad_epoch;
 static long g_pad_frame_ms, g_pad_hold_a_ms;
 static int g_pad_skip_done, g_pad_logs;
 unsigned long g_tgt_pad_axis, g_tgt_pad_button;
@@ -35,40 +37,87 @@ static int pad_bit_of(int keycode) {
         default: return -1;
     }
 }
+static unsigned pad_buttons_locked(void) {
+    unsigned buttons = g_pad.buttons;
+    if (g_pad.hatx < -0.5f) buttons |= 1u << PAD_LEFT; if (g_pad.hatx > 0.5f) buttons |= 1u << PAD_RIGHT;
+    if (g_pad.haty < -0.5f) buttons |= 1u << PAD_UP; if (g_pad.haty > 0.5f) buttons |= 1u << PAD_DOWN;
+    if (fmaxf(g_pad.lt_axis, g_pad.brake) > 0.5f) buttons |= 1u << PAD_L2;
+    if (fmaxf(g_pad.rt_axis, g_pad.gas) > 0.5f) buttons |= 1u << PAD_R2;
+    return buttons;
+}
+static void pad_clear_locked(void) {
+    memset(&g_pad, 0, sizeof g_pad);
+    g_pad_device = -1;
+    __atomic_store_n(&g_pad_last_ms, 0, __ATOMIC_RELEASE);
+    __atomic_add_fetch(&g_pad_epoch, 1, __ATOMIC_ACQ_REL);
+}
+static void touch_gamepad_reset_device(int device) {
+    pthread_mutex_lock(&g_pad_mx);
+    int reset = device < 0 || device == g_pad_device;
+    if (reset) pad_clear_locked();
+    pthread_mutex_unlock(&g_pad_mx);
+    if (!reset) return;
+    pthread_mutex_lock(&g_imx);
+    g_pad_held_ctl = 0; g_pad_move[0] = g_pad_move[1] = 0;
+    g_aim_latched = 0; g_touch_aim = 0; g_btn_hold_until[C_FIRE] = 0;
+    touch_grenade_fire_up(ptr_now_ms());
+    recompute();
+    pthread_mutex_unlock(&g_imx);
+}
+static void touch_gamepad_reset(void) { touch_gamepad_reset_device(-1); }
+__attribute__((visibility("default")))
+void Java_com_epicgames_ue4_MobileGamepad_nativeReset(void* env, void* type, int device) {
+    (void)env; (void)type;
+    touch_gamepad_reset_device(device);
+}
 // Mapped axes/buttons are consumed here: the game's own few gamepad bindings (Button A/B/Y, triggers, d-pad as
 // the left VR stick) would otherwise act a second time. Anything unmapped still reaches the engine.
 void hook_pad_axis(int device, int axis, float value) {
-    int mapped = 1;
+    float* target = 0;
     pthread_mutex_lock(&g_pad_mx);
     switch (axis) {      // Android MotionEvent axes forwarded by the engine
-        case 0: g_pad.lx = value; break;        case 1: g_pad.ly = value; break;
-        case 11: g_pad.rx = value; break;       case 14: g_pad.ry = value; break;   // Z / RZ: right stick
-        case 17: g_pad.lt_axis = value; break;  case 18: g_pad.rt_axis = value; break;
-        case 23: g_pad.brake = value; break;    case 22: g_pad.gas = value; break;
-        case 15: g_pad.hatx = value; break;     case 16: g_pad.haty = value; break;
-        default: mapped = 0; break;
+        case 0: target = &g_pad.lx; break;        case 1: target = &g_pad.ly; break;
+        case 11: target = &g_pad.rx; break;       case 14: target = &g_pad.ry; break;   // Z / RZ: right stick
+        case 17: target = &g_pad.lt_axis; break;  case 18: target = &g_pad.rt_axis; break;
+        case 23: target = &g_pad.brake; break;    case 22: target = &g_pad.gas; break;
+        case 15: target = &g_pad.hatx; break;     case 16: target = &g_pad.haty; break;
     }
-    if (mapped && !isfinite(value)) {   // never keep NaN/inf in the pad state
-        if (axis == 0) g_pad.lx = 0; else if (axis == 1) g_pad.ly = 0; else if (axis == 11) g_pad.rx = 0; else if (axis == 14) g_pad.ry = 0;
-        else if (axis == 17) g_pad.lt_axis = 0; else if (axis == 18) g_pad.rt_axis = 0; else if (axis == 23) g_pad.brake = 0;
-        else if (axis == 22) g_pad.gas = 0; else if (axis == 15) g_pad.hatx = 0; else g_pad.haty = 0;
+    if (target && __atomic_load_n(&g_app_input_focus, __ATOMIC_ACQUIRE)) {
+        if (!isfinite(value)) value = 0;
+        value = fmaxf(-1, fminf(1, value));
+        if (g_pad_device != device && fabsf(value) > 0.18f) { pad_clear_locked(); g_pad_device = device; }
+        if (g_pad_device == device) {
+            unsigned before = pad_buttons_locked();
+            *target = value;
+            unsigned after = pad_buttons_locked();
+            g_pad.pressed |= after & ~before; g_pad.released |= before & ~after;
+            __atomic_store_n(&g_pad_last_ms, ptr_now_ms(), __ATOMIC_RELEASE);
+        }
     }
-    if (mapped && isfinite(value) && fabsf(value) > 0.3f) g_pad.last_ms = ptr_now_ms();
     pthread_mutex_unlock(&g_pad_mx);
-    if (!mapped) gate_pad_axis(device, axis, value);
+    if (!target) gate_pad_axis(device, axis, value);
 }
 void hook_pad_button(int device, int button, int down) {
     int bit = pad_bit_of(button);
     if (bit < 0) { gate_pad_button(device, button, down); return; }
     pthread_mutex_lock(&g_pad_mx);
-    unsigned mask = 1u << bit;
-    if (down && !(g_pad.buttons & mask)) { g_pad.buttons |= mask; g_pad.pressed |= mask; }
-    else if (!down && (g_pad.buttons & mask)) { g_pad.buttons &= ~mask; g_pad.released |= mask; }
-    g_pad.last_ms = ptr_now_ms();
+    if (__atomic_load_n(&g_app_input_focus, __ATOMIC_ACQUIRE)) {
+        if (g_pad_device != device && down) { pad_clear_locked(); g_pad_device = device; }
+        if (g_pad_device == device) {
+            unsigned before = pad_buttons_locked(), mask = 1u << bit;
+            if (down) g_pad.buttons |= mask; else g_pad.buttons &= ~mask;
+            unsigned after = pad_buttons_locked();
+            g_pad.pressed |= after & ~before; g_pad.released |= before & ~after;
+            __atomic_store_n(&g_pad_last_ms, ptr_now_ms(), __ATOMIC_RELEASE);
+        }
+    }
     pthread_mutex_unlock(&g_pad_mx);
     if (g_pad_logs < 24) { g_pad_logs++; LOGF("PAD button key=%d down=%d", button, down); }
 }
-static int touch_gamepad_recent(long now) { return g_pad.last_ms && now - g_pad.last_ms < 8000; }
+static int touch_gamepad_recent(long now) {
+    long last = __atomic_load_n(&g_pad_last_ms, __ATOMIC_ACQUIRE);
+    return last && now >= last && now - last < 8000;
+}
 // The touch HUD steps aside while a pad is in use (a touch brings it back at once).
 static int touch_gamepad_hud_hidden(long now) {
     return touch_gamepad_recent(now) && now - __atomic_load_n(&g_last_touch_ms, __ATOMIC_ACQUIRE) > 3000;
@@ -89,23 +138,36 @@ static void touch_gamepad_frame(void) {
     if (dt < 0 || dt > 100) dt = 16;
     pthread_mutex_lock(&g_pad_mx);
     float lx = pad_dead(g_pad.lx), ly = pad_dead(g_pad.ly), rx = pad_dead(g_pad.rx), ry = pad_dead(g_pad.ry);
-    float lt = fmaxf(g_pad.lt_axis, g_pad.brake), rt = fmaxf(g_pad.rt_axis, g_pad.gas);
-    unsigned buttons = g_pad.buttons, pressed = g_pad.pressed, released = g_pad.released;
-    if (g_pad.hatx < -0.5f) buttons |= 1u << PAD_LEFT; if (g_pad.hatx > 0.5f) buttons |= 1u << PAD_RIGHT;
-    if (g_pad.haty < -0.5f) buttons |= 1u << PAD_UP;   if (g_pad.haty > 0.5f) buttons |= 1u << PAD_DOWN;
-    if (lt > 0.5f || (buttons & (1u << PAD_L2))) buttons |= 1u << PAD_L2;
-    if (rt > 0.5f || (buttons & (1u << PAD_R2))) buttons |= 1u << PAD_R2;
+    unsigned buttons = pad_buttons_locked(), pressed = g_pad.pressed, released = g_pad.released;
+    unsigned epoch = __atomic_load_n(&g_pad_epoch, __ATOMIC_ACQUIRE);
+    int connected = g_pad_device >= 0;
     g_pad.pressed = g_pad.released = 0;
-    int active = touch_gamepad_recent(now);
     pthread_mutex_unlock(&g_pad_mx);
-    static unsigned prev;
-    unsigned edge_down = (buttons & ~prev) | pressed, edge_up = (~buttons & prev) | released;
-    prev = buttons;
-    if (!active && !edge_down) { pthread_mutex_lock(&g_imx); g_pad_held_ctl = 0; g_pad_move[0] = g_pad_move[1] = 0; pthread_mutex_unlock(&g_imx); return; }
     int back = 0;
     pthread_mutex_lock(&g_imx);
+    static unsigned prev, frame_epoch, blocked, stick_blocked;
+    static int previous_context = -1, previous_menu = -1;
     int menu = menu_mode(), context = g_touch_context;
     sync_touch_context(menu);
+    if (frame_epoch != epoch) { prev = blocked = stick_blocked = 0; frame_epoch = epoch; previous_context = -1; }
+    if (!connected || epoch != __atomic_load_n(&g_pad_epoch, __ATOMIC_ACQUIRE)
+        || !__atomic_load_n(&g_app_input_focus, __ATOMIC_ACQUIRE) || (context == 1 && g_touch_cancel)) {
+        g_pad_held_ctl = 0; g_pad_move[0] = g_pad_move[1] = 0;
+        prev = buttons; blocked = buttons; stick_blocked = 3;
+        recompute(); pthread_mutex_unlock(&g_imx); return;
+    }
+    if (previous_context >= 0 && (context != previous_context || menu != previous_menu)) {
+        blocked |= buttons; stick_blocked = (lx || ly ? 1 : 0) | (rx || ry ? 2 : 0);
+        pressed = 0; g_pad_hold_a_ms = 0; g_pad_skip_done = 0;
+    }
+    previous_context = context; previous_menu = menu;
+    blocked &= buttons;
+    if (!lx && !ly) stick_blocked &= ~1u; if (!rx && !ry) stick_blocked &= ~2u;
+    if (stick_blocked & 1) lx = ly = 0; if (stick_blocked & 2) rx = ry = 0;
+    buttons &= ~blocked; pressed &= ~blocked;
+    unsigned edge_down = (buttons & ~prev) | pressed, edge_up = (~buttons & prev) | released;
+    prev = buttons;
+    if (buttons || lx || ly || rx || ry) __atomic_store_n(&g_pad_last_ms, now, __ATOMIC_RELEASE);
     unsigned held = 0;
     if (menu && context != 3) {
         // Menus: the left stick / d-pad moves the native pointer, A clicks, B goes back.
@@ -118,7 +180,12 @@ static void touch_gamepad_frame(void) {
             g_ptr_v = v < 0.02f ? 0.02f : v > 0.98f ? 0.98f : v;
             g_ptr_until_ms = now + 800;
         }
-        if (edge_down & (1u << PAD_A)) pointer_click(g_ptr_u * g_tw, g_ptr_v * g_th, 100);
+        if (edge_down & (1u << PAD_A)) {
+            // The authored title listens for A; ordinary menu entries listen for the pointer trigger.
+            if ((touch_menu_title_mask(now)&1u) && ctl_visible(C_CONFIRM,menu))
+                g_btn_hold_until[C_CONFIRM]=now+150;
+            else pointer_click(g_ptr_u * g_tw, g_ptr_v * g_th, 100);
+        }
         if (edge_down & (1u << PAD_B)) {
             back = 1;
             // First-time hint popups refuse Back; B counts as the "tap anywhere" that closes them via OK.
@@ -140,6 +207,7 @@ static void touch_gamepad_frame(void) {
         }
         if (edge_down & (1u << PAD_START)) touch_button_press(C_PAUSE, menu);
     } else if (context == 1) {
+        if ((buttons & (1u << PAD_A)) && ctl_visible(C_INTERACT,menu)) held |= 1u << C_INTERACT;
         g_pad_move[0] = lx; g_pad_move[1] = -ly;            // Android stick: up is -1
         // Right stick: look rate with a squared response curve for fine aiming.
         if (rx || ry) {
@@ -165,7 +233,10 @@ static void touch_gamepad_frame(void) {
         struct touch_quickselect_state selected = touch_quickselect_state(now);
         if (edge_down & (1u << PAD_R2)) {
             if (touch_quickselect_ready() && selected.selected == 2) (void)touch_grenade_fire_down(now);
-            else touch_button_press(C_FIRE, menu);
+            else if (ctl_visible(C_FIRE, menu)) {
+                touch_button_press(C_FIRE, menu);
+                if (!touch_throw_mode(now)) g_btn_hold_until[C_FIRE] = now + 90;
+            }
         }
         if (edge_up & (1u << PAD_R2)) touch_grenade_fire_up(now);
         if ((buttons & (1u << PAD_R2)) && !(touch_quickselect_ready() && selected.selected == 2)) held |= 1u << C_FIRE;
@@ -183,7 +254,7 @@ static void touch_gamepad_log(void) {
     pthread_mutex_lock(&g_pad_mx);
     LOGF("PAD state L=%.2f,%.2f R=%.2f,%.2f LT=%.2f/%.2f RT=%.2f/%.2f hat=%.0f,%.0f buttons=%04x last=%ldms ago",
          g_pad.lx, g_pad.ly, g_pad.rx, g_pad.ry, g_pad.lt_axis, g_pad.brake, g_pad.rt_axis, g_pad.gas, g_pad.hatx, g_pad.haty,
-         g_pad.buttons, g_pad.last_ms ? ptr_now_ms() - g_pad.last_ms : -1L);
+         g_pad.buttons, g_pad_last_ms ? ptr_now_ms() - g_pad_last_ms : -1L);
     pthread_mutex_unlock(&g_pad_mx);
 }
 static void install_gamepad(unsigned long base) {

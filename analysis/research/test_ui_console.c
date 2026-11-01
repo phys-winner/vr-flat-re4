@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include UI_CURVE_CAPTURE
+#include UI_MERC_CAPTURE
 typedef struct{float x,y,z,w;}qf_t;
 struct __attribute__((aligned(16)))reload_tf{qf_t q;float p[3],s[3],padding[2];};
 static qf_t q_mul(qf_t a,qf_t b){return(qf_t){a.w*b.x+a.x*b.w+a.y*b.z-a.z*b.y,a.w*b.y-a.x*b.z+a.y*b.w+a.z*b.x,a.w*b.z+a.x*b.y-a.y*b.x+a.z*b.w,a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z};}
@@ -19,28 +21,59 @@ static int reload_marker_valid(const struct reload_tf* tf){
 static int reload_tf_valid(const struct reload_tf* tf){return reload_marker_valid(tf)&&tf->s[0]==1&&tf->s[1]==1&&tf->s[2]==1;}
 #include "../re4fix_ui_frame.h"
 struct cinema_ui_weak{int index,serial;};
-static unsigned char objects[20][0x600];static int alive[20],serials[20],world_calls,restores,refreshes,bounds_ok;
+enum{OBJECT_COUNT=350};
+static unsigned char objects[OBJECT_COUNT][0x600];static int alive[OBJECT_COUNT],serials[OBJECT_COUNT],world_calls,restores,refreshes,bounds_ok;
+static int merc_mode;static unsigned merc_kind[OBJECT_COUNT];
 static unsigned g_comp_w=2400,g_comp_h=1080;static float g_fov_h_deg=90;
-static int index_of(const void* p){for(int i=0;i<20;i++)if(p==objects[i])return i;return -1;}
+static int index_of(const void* p){for(int i=0;i<OBJECT_COUNT;i++)if(p==objects[i])return i;return -1;}
 static int pv_alive(const void* p){int i=index_of(p);return i>=0&&alive[i];}
 static void weak_assign(struct cinema_ui_weak* ref,const void* object){ref->index=index_of(object);ref->serial=ref->index<0?0:serials[ref->index];}
-static void* weak_get(const struct cinema_ui_weak* ref){return ref->index>=0&&ref->index<20&&alive[ref->index]&&serials[ref->index]==ref->serial?objects[ref->index]:0;}
+static void* weak_get(const struct cinema_ui_weak* ref){return ref->index>=0&&ref->index<OBJECT_COUNT&&alive[ref->index]&&serials[ref->index]==ref->serial?objects[ref->index]:0;}
 static void(*cu_weak_assign)(struct cinema_ui_weak*,const void*)=weak_assign;
 static void*(*cu_weak_get)(const struct cinema_ui_weak*)=weak_get;
 static void* scene_class(void){return(void*)1;}static void* static_class(void){return(void*)2;}static void* button_class(void){return(void*)3;}
+static void* screen_class(void){return(void*)7;}
+static void* scroll_class(void){return(void*)10;}static void*(*fv_scroll_class)(void)=scroll_class;
+static void*(*fv_screen_class)(void)=screen_class;
 static void* camera_class(void){return(void*)4;}static void* pawn_class(void){return(void*)5;}
 static void*(*mv_scene_class)(void)=scene_class,*(*mv_static_class)(void)=static_class,*(*fv_button_class)(void)=button_class;
 static void*(*cinema_camera_class)(void)=camera_class,*(*mv_pawn_class)(void)=pawn_class;
-static int death_class_ok=1,death_property_ok=1,death_button_ok=1;
-static int menu_visual_layout(const void* p,const void* cls,int size){(void)size;return pv_alive(p)&&(cls==(void*)1
-    ||(cls==(void*)2&&(p==objects[3]||p==objects[10]))||(cls==(void*)3&&(p==objects[6]||p==objects[15]||p==objects[18]))
-    ||(cls==(void*)4&&p==objects[12])||(cls==(void*)5&&p==objects[11]));}
+static int death_class_ok=1,death_property_ok=1,death_button_ok=1,results_mode,case_mode,curved_mode;
+static void* actor_class(void){return(void*)8;}static void*(*pv_actor_class)(void)=actor_class;
+static void* child_class(void){return(void*)9;}static void*(*pv_child_class)(void)=child_class;
+static unsigned char parent_property[0x60];static int parent_component_class_ok=1;
+static const char* cinema_field_property(const void* object,const char* name,const char* kind){
+    return (object==objects[10]||object==objects[22])&&!strcmp(name,"ParentComponent")&&!strcmp(kind,"WeakObjectProperty")?(const char*)parent_property:0;
+}
+static const unsigned case_parts[]={15,16,17,18,19,1,2};
+static const char* const case_fields[]={"Background_Plane","Frame_Mesh_Back","Frame_Mesh_Sides",
+    "DoorMesh_Left","DoorMesh_Right","DoorExtension_Left","DoorExtension_Right"};
+static float case_origins[20][3],case_extents[20][3];static unsigned bounds_calls,case_panel_queries[2];
+static int menu_visual_layout(const void* p,const void* cls,int size){(void)size;
+    if(merc_mode&&pv_alive(p)) {
+        unsigned kind=merc_kind[index_of(p)];
+        if(cls==(void*)1)return !!(kind&1);if(cls==(void*)3)return !!(kind&4);
+        if(cls==(void*)6)return !!(kind&2);if(cls==(void*)8)return !!(kind&16);
+        if(cls==(void*)10)return !!(kind&8);
+    }
+    return pv_alive(p)&&(cls==(void*)1
+    ||(cls==(void*)2&&(p==objects[3]||p==objects[10]||(case_mode&&(p==objects[15]||p==objects[16]||p==objects[17]||p==objects[18]||p==objects[19]||p==objects[1]||p==objects[2]))))||(cls==(void*)3&&(p==objects[6]||p==objects[15]||p==objects[18]))
+    ||(cls==(void*)4&&p==objects[12])||(cls==(void*)5&&p==objects[11])
+    ||(cls==(void*)6&&(p==objects[10]||(curved_mode&&p==objects[21])||(case_mode&&(p==objects[24]||p==objects[27]||p==objects[28]))))
+    ||(cls==(void*)7&&((p==objects[8]&&(results_mode||case_mode))||(case_mode&&(p==objects[22]||p==objects[25]))))
+    ||(cls==(void*)8&&(p==objects[8]||p==objects[10]||p==objects[13]||p==objects[22]||p==objects[25]))
+    ||(cls==(void*)9&&parent_component_class_ok&&(p==objects[20]||p==objects[21]||p==objects[29])));}
 static int cinema_object(const void* p,const void* cls,int size){return menu_visual_layout(p,cls,size);}
 static int cinema_ui_named(const void* p,const char* name,int size){
     (void)size;return pv_alive(p)&&((p==objects[0]&&!strcmp(name,"OptionsUIScreen_BP_C"))
         ||(p==objects[1]&&!strcmp(name,"UI_PauseMenu_Content_GameOptions_BP_C"))
         ||(p==objects[7]&&!strcmp(name,"OptionsCoverScreen_BP_C"))
-        ||(p==objects[8]&&death_class_ok&&!strcmp(name,"DeathMenu_BP_C"))
+        ||(p==objects[8]&&death_class_ok&&!results_mode&&!strcmp(name,"DeathMenu_BP_C"))
+        ||(p==objects[8]&&results_mode==1&&!strcmp(name,"UI_MercenariesResults_BP_C"))
+        ||(p==objects[8]&&results_mode==2&&!strcmp(name,"UI_ChapterSummary_BP_C"))
+        ||(p==objects[13]&&case_mode==1&&!strcmp(name,"UI_MercMenu_Content_CreateGame_BP_C"))
+        ||(p==objects[13]&&case_mode==2&&!strcmp(name,"UI_PauseMenu_Content_NewGame_BP_C"))
+        ||(p==objects[13]&&case_mode==3&&!strcmp(name,"UI_PauseMenu_Content_Options_BP_C"))
         ||((p==objects[13]||p==objects[16])&&death_button_ok&&!strcmp(name,"Button_Death_C")));
 }
 static void* cinema_ui_property(void* object,const char* cls,const char* field,int offset){
@@ -48,6 +81,9 @@ static void* cinema_ui_property(void* object,const char* cls,const char* field,i
     return death_property_ok&&cinema_ui_named(object,cls,0x498)?*(void**)((char*)object+offset):0;
 }
 static void* fv_object_property(const void* object,const char* name){
+    if(case_mode && object==objects[13])for(unsigned i=0;i<7;i++)if(!strcmp(name,case_fields[i]))return objects[case_parts[i]];
+    if(object==objects[8]&&((results_mode==1&&!strcmp(name,"Widget_Results"))
+        ||(results_mode==2&&!strcmp(name,"Widget_Unlocks"))))return objects[10];
     if(object==objects[7]&&!strcmp(name,"OptionsUIScreenBP"))return objects[0];
     if(object==objects[0]&&!strcmp(name,"TrifoldBaseBP"))return objects[1];
     if(object==objects[1]&&!strcmp(name,"UIScreen"))return objects[0];
@@ -55,8 +91,8 @@ static void* fv_object_property(const void* object,const char* name){
     if(object==objects[1]&&!strcmp(name,"Background_Plane"))return objects[3];return 0;
 }
 static int fv_frame_owned(void* root,void* owner){return pv_alive(root)&&pv_alive(owner)&&*(void*const*)((char*)root+0xa0)==owner&&*(void*const*)((char*)owner+0x130)==root;}
-static int fv_descends_from(void* part,const void* root){return pv_alive(part)&&*(void*const*)((char*)part+0xc0)==root;}
 static int cinema_movie_screen_bounds(void* component,float origin[3],float extent[3]){
+    if(case_mode){int i=index_of(component);assert(i>=0);bounds_calls++;memcpy(origin,case_origins[i],12);memcpy(extent,case_extents[i],12);return bounds_ok;}
     if(component==objects[10]){origin[0]=-30.0933837890625f;origin[1]=origin[2]=0;extent[0]=29.57433319091797f;extent[1]=208.4534149169922f;extent[2]=142.9199981689453f;return bounds_ok;}
     assert(component==objects[3]);memset(origin,0,12);extent[0]=extent[1]=50;extent[2]=0;return bounds_ok;
 }
@@ -88,7 +124,7 @@ static long current_ms, fv_lobby_zoom_ms;
 static int on_game_thread;
 static void* current_pawn,*current_screen;
 static void* manager(void){return objects[0];}
-static int enabled(const void* object){return object!=0;}
+static int enabled(const void* object){return merc_mode&&pv_alive(object)?*((const unsigned char*)object+0x264)!=0:object!=0;}
 static void* active(void){assert(on_game_thread);return current_pawn;}
 static unsigned type(void){assert(on_game_thread);return current_type;}
 static void*(*fv_ui_manager)(void)=manager;
@@ -97,13 +133,28 @@ static void*(*fv_peek_screen)(void*)=peek;
 static int(*fv_ui_enabled)(const void*)=enabled;
 static void*(*phone_active)(void)=active;
 static unsigned(*phone_type)(void)=type;
+struct cinema_ui_vec2{float x,y;};
+static void* widget_class(void){return(void*)6;}
+static void*(*cu_component_class)(void)=widget_class;
+static struct cinema_ui_vec2 draw_size(const void* part){
+    if(merc_mode&&(merc_kind[index_of(part)]&2)){int size[2];memcpy(size,(const char*)part+0x450,8);return(struct cinema_ui_vec2){(float)size[0],(float)size[1]};}
+    if(curved_mode&&(part==objects[10]||part==objects[21])){int size[2];memcpy(size,(const char*)part+0x450,8);return(struct cinema_ui_vec2){(float)size[0],(float)size[1]};}
+    if(case_mode&&(part==objects[24]||part==objects[27]||part==objects[28])){
+        if(part==objects[24])case_panel_queries[0]++;if(part==objects[27])case_panel_queries[1]++;
+        int size[2];memcpy(size,(const char*)part+0x450,sizeof size);return(struct cinema_ui_vec2){(float)size[0],(float)size[1]};
+    }
+    assert(part==objects[10]);return(struct cinema_ui_vec2){1200,700};
+}
+static struct cinema_ui_vec2(*cu_draw_size)(const void*)=draw_size;
+static int(*fv_control_plane)(void*,struct fv_plane*);
+#include UI_WIDGET_FRAGMENT
 static int cinema_on_game_thread(void){return on_game_thread;}
 static long ptr_now_ms(void){return current_ms;}
 static int g_touch_context,g_menu_view_active;
 static float g_look_yaw,g_look_pitch,g_yaw_turned,g_menu_yaw_off,g_menu_pitch;
 static long g_lobby_menu_ms,g_menu_view_ms;
 static float quick_turn_offset(void){return 0;}
-static float mobile_view_pitch(int context,float pitch){return context==2||context==4||context==5||context==7?0:pitch;}
+#include "../re4fix_mobile_view.h"
 static int mock_clock_gettime(int clock_id,struct timespec* ts){(void)clock_id;ts->tv_sec=current_ms/1000;ts->tv_nsec=(current_ms%1000)*1000000;return 0;}
 #ifndef CLOCK_MONOTONIC
 #define CLOCK_MONOTONIC 1
@@ -116,10 +167,15 @@ static int mock_clock_gettime(int clock_id,struct timespec* ts){(void)clock_id;t
 static struct reload_tf camera={{0,0,0,1},{0,0,160},{1,1,1},{0,0}};
 static void* parts[1];
 static void ready(void){
+    merc_mode=0;memset(merc_kind,0,sizeof merc_kind);
     memset(objects,0,sizeof objects);memset(&fv_console,0,sizeof fv_console);
-    memset(&fv_camera_menu,0,sizeof fv_camera_menu);death_class_ok=death_property_ok=death_button_ok=1;
+    memset(&fv_camera_menu,0,sizeof fv_camera_menu);memset(fv_case_mesh_bounds,0,sizeof fv_case_mesh_bounds);
+    fv_case_parent_class=0;parent_component_class_ok=1;memset(parent_property,0,sizeof parent_property);
+    *(int*)(parent_property+0x4c)=0x160;*(int*)(parent_property+0x34)=1;*(int*)(parent_property+0x38)=8;
+    death_class_ok=death_property_ok=death_button_ok=1;results_mode=case_mode=curved_mode=0;bounds_calls=0;memset(case_panel_queries,0,sizeof case_panel_queries);
+    fv_current_draw_size=draw_size;
     g_menu_view_active=0;g_menu_yaw_off=g_menu_pitch=0;g_menu_view_ms=g_lobby_menu_ms=0;fv_lobby_zoom_ms=0;
-    for(int i=0;i<20;i++)alive[i]=serials[i]=1;
+    for(int i=0;i<OBJECT_COUNT;i++)alive[i]=serials[i]=1;
     *(void**)(objects[1]+0x130)=objects[2];*(void**)(objects[2]+0xa0)=objects[1];*(void**)(objects[2]+0xc0)=objects[5];
     *(void**)(objects[3]+0xa0)=objects[1];*(void**)(objects[3]+0xc0)=objects[2];
     *(void**)(objects[0]+0x130)=objects[4];*(void**)(objects[4]+0xa0)=objects[0];
@@ -149,6 +205,29 @@ static void test_camera_fov(void){
     fv_lobby_zoom_ms=1000;on_game_thread=0;check_camera_fov(0);on_game_thread=1;
     current_pawn=0;check_camera_fov(0);current_pawn=objects[5];*(void**)(objects[5]+0x2d8)=objects[6];check_camera_fov(0);
 }
+static void test_merchant_fov(void){
+    ready();current_pawn=objects[11];*(void**)(objects[11]+0x2d8)=objects[12];*(void**)(objects[12]+0xa0)=objects[11];
+    current_type=g_touch_context=8;on_game_thread=1;current_ms=1000;
+    const unsigned widths[]={1080,1920,2336,2400,2640,4320};
+    unsigned char view[0x100],before[sizeof view];
+    for(unsigned i=0;i<sizeof widths/sizeof *widths;i++){
+        g_comp_w=widths[i];g_comp_h=1080;memset(view,0x5a,sizeof view);float authored=90;memcpy(view+0x18,&authored,4);memcpy(before,view,sizeof view);
+        fv_menu_camera_view(objects[12],view);float fov;memcpy(&fov,view+0x18,4);
+        assert(fabsf(2*atanf(tanf(fov*.00872664626f)*g_comp_h/g_comp_w)*57.2957795f-60)<.0001f);
+        assert(fov==g_fov_h_deg);memcpy(view+0x18,before+0x18,4);assert(!memcmp(view,before,sizeof view));
+    }
+    for(unsigned refusal=0;refusal<8;refusal++){
+        ready();current_pawn=objects[11];*(void**)(objects[11]+0x2d8)=objects[12];*(void**)(objects[12]+0xa0)=objects[11];
+        current_type=8;on_game_thread=1;g_comp_w=2336;g_comp_h=1080;
+        if(refusal==0)current_pawn=0;if(refusal==1)*(void**)(objects[11]+0x2d8)=objects[7];
+        if(refusal==2)on_game_thread=0;if(refusal==3)g_comp_h=0;if(refusal==4)g_comp_w=100;
+        if(refusal==5)g_comp_w=4321;if(refusal==6)*(void**)(objects[12]+0xa0)=objects[10];if(refusal==7)alive[11]=0;
+        memset(view,0x5a,sizeof view);float authored=90;memcpy(view+0x18,&authored,4);memcpy(before,view,sizeof view);
+        fv_menu_camera_view(objects[12],view);assert(!memcmp(view,before,sizeof view));
+    }
+    g_comp_w=2400;g_comp_h=1080;
+    puts("PASS: actual merchant camera keeps60-degree vertical view across6 display aspects including reported devices; only FOV bytes change;8 inactive/foreign/invalid-size refusals");
+}
 static void* death_parts[2];
 static struct reload_tf death_camera(void){
     float yaw,pitch;head_angles_now(&yaw,&pitch);
@@ -176,6 +255,7 @@ static void death_ready(void){
         // The original Button_Death roots are separate world roots, not DeathMenu descendants.
         struct reload_tf button_root={{0,0,0,1},{516,i?72.0f:-72.0f,19854},{1,1,1},{0,0}};
         memcpy(objects[actor+1]+0x1c0,&button_root,sizeof button_root);button_root.q=(qf_t){0,0,1,0};memcpy(objects[button]+0x1c0,&button_root,sizeof button_root);
+        *(float*)(objects[button]+0x318)=120;*(float*)(objects[button]+0x31c)=30;
     }
     struct{void**data;int count,max;} list={death_parts,2,2};memcpy(objects[8]+0x238,&list,sizeof list);
 }
@@ -233,6 +313,488 @@ static void test_death_camera(void){
     }
     puts("PASS: actual DeathMenu detached native roots remain byte-identical; original bounds+52degree inherited anchor fit8 corners and both120x30 hit planes; real head_angles_now context4 correction stable20frames, stale/future refusal, weak/current screen and12 ownership/class/context/geometry guards");
 }
+static void test_results_camera(int chapter){
+    death_ready();results_mode=chapter+1;
+    static void* children[1];children[0]=objects[10];
+    struct{void**data;int count,max;} child_list={children,1,1};memcpy(objects[9]+0xd0,&child_list,sizeof child_list);
+    struct reload_tf widget={{0,0,1,0},{600,0,20000},{.5f,.5f,.5f},{0,0}};
+    memcpy(objects[10]+0x1c0,&widget,sizeof widget);
+    *(unsigned short*)(objects[10]+0x14c)=0x20;
+    *(float*)(objects[10]+0x45c)=*(float*)(objects[10]+0x460)=.5f;
+    unsigned char before[sizeof objects];memcpy(before,objects,sizeof before);
+    float stable_yaw=0,stable_pitch=0,stable_fov=0;
+    for(unsigned frame=0;frame<40;frame++){
+        struct reload_tf current=death_camera();
+        assert(fv_camera_menu_tick(objects[8],&current,current_ms));
+        float yaw,pitch;head_angles_now(&yaw,&pitch);
+        if(!frame){stable_yaw=yaw;stable_pitch=pitch;stable_fov=fv_camera_menu.fov;}
+        assert(fabsf(yaw-stable_yaw)<.0001f&&fabsf(pitch-stable_pitch)<.0001f&&fabsf(fv_camera_menu.fov-stable_fov)<.0001f);
+        assert(fabsf(yaw-52*.0174532925199433f)<.001f);death_view(1);
+        struct reload_tf mesh,desired;float origin[3],extent[3],fov;
+        assert(fv_camera_menu_bounds(objects[8],objects[9],&mesh,origin,extent));
+        current=death_camera();assert(fv_bounds_camera(&current,&mesh,origin,extent,2400.0f/1080,&desired,&fov));
+        qf_t inv={-current.q.x,-current.q.y,-current.q.z,current.q.w};float tangent=tanf(fov*.00872664625997165f);
+        for(unsigned corner=0;corner<8;corner++){
+            float local[3],world[3],at[3];
+            for(unsigned k=0;k<3;k++)local[k]=(origin[k]+(corner&(1u<<k)?extent[k]:-extent[k]))*mesh.s[k];
+            q_rot(mesh.q,local,world);for(unsigned k=0;k<3;k++)world[k]+=mesh.p[k]-current.p[k];q_rot(inv,world,at);
+            assert(at[0]>1&&fabsf(at[1])/at[0]<tangent*.861f&&fabsf(at[2])/at[0]<tangent/(2400.0f/1080)*.861f);
+        }
+        current_ms+=16;
+    }
+    assert(!memcmp(before,objects,sizeof before)&&!world_calls&&!restores&&!refreshes);
+    *(void**)(objects[9]+0xa0)=objects[0];struct reload_tf current=death_camera();assert(!fv_camera_menu_tick(objects[8],&current,current_ms));
+    *(void**)(objects[9]+0xa0)=objects[8];*(float*)(objects[10]+0x45c)=NAN;assert(!fv_camera_menu_tick(objects[8],&current,current_ms));
+    *(float*)(objects[10]+0x45c)=.5f;*(unsigned short*)(objects[10]+0x14c)=0;assert(!fv_camera_menu_tick(objects[8],&current,current_ms));
+    printf("PASS: actual %s widget and detached button planes fit original camera for40 stable frames; shared actual widget size/pivot helper, all8 frustum corners, native roots byte-identical, owner/hidden/invalid pivot refusal\n",chapter==2?"unlisted native UIScreen":chapter?"ChapterSummary":"Mercenaries");
+}
+static void curved_ready(float inherited){
+    death_ready();results_mode=2;curved_mode=1;
+    g_look_yaw=inherited*.0174532925199433f;g_look_pitch=0;
+    struct reload_tf root={{0,0,0,1},{-10000,-10000,-10000},{1,1,1},{0,0}};
+    memcpy(objects[9]+0x1c0,&root,sizeof root);
+    root.p[2]=10000;memcpy(objects[20]+0x1c0,&root,sizeof root);*(void**)(objects[20]+0xc0)=objects[9];
+    *(void**)(objects[20]+0xa0)=objects[8];
+    root.p[0]=-9677.1695f;root.p[1]=-9999.99976f;root.p[2]=9951.625f;
+    root.q=(qf_t){0,0,1,0};root.s[0]=root.s[1]=root.s[2]=.22375f;
+    memcpy(objects[10]+0x1c0,&root,sizeof root);*(void**)(objects[10]+0x20)=*(void**)(objects[10]+0xa0)=objects[8];
+    *(void**)(objects[10]+0xc0)=objects[20];objects[10][0x518]=1;
+    *(float*)(objects[10]+0x51c)=64.0761947631836f;
+    *(int*)(objects[10]+0x450)=1920;*(int*)(objects[10]+0x454)=1080;
+    *(float*)(objects[10]+0x45c)=*(float*)(objects[10]+0x460)=.5f;
+    *(unsigned short*)(objects[10]+0x14c)=0x20;
+    static void* children[2][1];children[0][0]=objects[20];children[1][0]=objects[10];
+    struct{void**data;int count,max;} links={children[0],1,1};memcpy(objects[9]+0xd0,&links,sizeof links);
+    links.data=children[1];memcpy(objects[20]+0xd0,&links,sizeof links);
+    struct reload_tf button={{0,0,.9776f,-.2102f},{-9653.7f,-9844.6f,9838.4f},{2,2,2},{0,0}};
+    float norm=sqrtf(button.q.z*button.q.z+button.q.w*button.q.w);button.q.z/=norm;button.q.w/=norm;
+    memcpy(objects[15]+0x1c0,&button,sizeof button);*(float*)(objects[15]+0x318)=44;*(float*)(objects[15]+0x31c)=13;
+    struct reload_tf button_root=button;button_root.q=(qf_t){0,0,.2102f,.9776f};
+    norm=sqrtf(button_root.q.z*button_root.q.z+button_root.q.w*button_root.q.w);button_root.q.z/=norm;button_root.q.w/=norm;
+    memcpy(objects[14]+0x1c0,&button_root,sizeof button_root);*(void**)(objects[14]+0xc0)=objects[23];
+    *(void**)(objects[23]+0xc0)=objects[9];
+    *(void**)(objects[23]+0xa0)=objects[8];
+    struct reload_tf button_widget=button_root;float widget_offset[3];
+    q_rot(button_root.q,(float[3]){1.7806957960128784f*2,-1.1162678248410884e-7f*2,-7.62939453125e-6f*2},widget_offset);
+    for(unsigned k=0;k<3;k++){button_widget.p[k]+=widget_offset[k];button_widget.s[k]=.2f;}
+    memcpy(objects[21]+0x1c0,&button_widget,sizeof button_widget);
+    *(void**)(objects[21]+0xa0)=*(void**)(objects[21]+0x20)=objects[13];*(void**)(objects[21]+0xc0)=objects[14];
+    *(int*)(objects[21]+0x450)=540;*(int*)(objects[21]+0x454)=220;
+    *(float*)(objects[21]+0x45c)=*(float*)(objects[21]+0x460)=.5f;*(float*)(objects[21]+0x51c)=22;
+    objects[21][0x518]=1;*(unsigned short*)(objects[21]+0x14c)=0x20;
+    static void* button_children[2][1];button_children[0][0]=objects[14];button_children[1][0]=objects[21];
+    struct{void**data;int count,max;} button_links={button_children[0],1,1};memcpy(objects[23]+0xd0,&button_links,sizeof button_links);
+    button_links.data=button_children[1];memcpy(objects[14]+0xd0,&button_links,sizeof button_links);
+    static void* root_children[2];root_children[0]=objects[20];root_children[1]=objects[23];
+    struct{void**data;int count,max;} root_links={root_children,2,2};memcpy(objects[9]+0xd0,&root_links,sizeof root_links);
+    struct{void**data;int count,max;} controls={death_parts,1,1};memcpy(objects[8]+0x238,&controls,sizeof controls);
+}
+static struct reload_tf curved_camera(float inherited){
+    float yaw,pitch;head_angles_now(&yaw,&pitch);
+    qf_t head=q_mul((qf_t){0,0,-sinf(yaw*.5f),cosf(yaw*.5f)},(qf_t){0,-sinf(pitch*.5f),0,cosf(pitch*.5f)});
+    float half=inherited*.00872664625997165f;
+    return(struct reload_tf){q_mul((qf_t){0,0,sinf(half),cosf(half)},head),{-9992,-10000,9965.3f},{1,1,1},{0,0}};
+}
+static void test_curved_results_camera(void){
+    const float headings[]={0,-110.67f,77,179,-179};
+    const float arcs[]={22,64.0761947631836f};
+    for(int family=1;family<=3;family++)for(unsigned ai=0;ai<2;ai++)for(unsigned heading=0;heading<sizeof headings/sizeof *headings;heading++) {
+        curved_ready(headings[heading]);unsigned char before[sizeof objects];memcpy(before,objects,sizeof before);
+        results_mode=family;*(float*)(objects[10]+0x51c)=arcs[ai];memcpy(before,objects,sizeof before);
+        struct fv_plane planar[2];assert(fv_collect_widgets(objects[9],planar,2)==0);
+        struct fv_plane curved[4];assert(fv_camera_widgets(objects[8],objects[9],curved,4)==4);
+        float stable_yaw=0,stable_pitch=0,stable_fov=0;
+        for(unsigned frame=0;frame<40;frame++) {
+            struct reload_tf current=curved_camera(headings[heading]);
+            assert(fv_camera_menu_tick(objects[8],&current,current_ms));
+            float yaw,pitch;head_angles_now(&yaw,&pitch);
+            if(!frame){stable_yaw=yaw;stable_pitch=pitch;stable_fov=fv_camera_menu.fov;}
+            assert(fabsf(yaw-stable_yaw)<.0001f&&fabsf(pitch-stable_pitch)<.0001f&&fabsf(fv_camera_menu.fov-stable_fov)<.0001f);
+            current=curved_camera(headings[heading]);qf_t inv={-current.q.x,-current.q.y,-current.q.z,current.q.w};
+            struct reload_tf widget;memcpy(&widget,objects[10]+0x1c0,sizeof widget);
+            float arc=arcs[ai]*.0174532925199433f,radius=1920/arc,tangent=tanf(fv_camera_menu.fov*.00872664625997165f);
+            for(unsigned sample=0;sample<=100;sample++)for(unsigned edge=0;edge<2;edge++) {
+                float theta=arc*((float)sample/100-.5f);
+                float local[3]={radius*(cosf(arc*.5f)-cosf(theta)),-radius*sinf(theta),edge?540.0f:-540.0f},world[3],at[3];
+                for(unsigned k=0;k<3;k++)local[k]*=widget.s[k];q_rot(widget.q,local,world);
+                for(unsigned k=0;k<3;k++)world[k]+=widget.p[k]-current.p[k];q_rot(inv,world,at);
+                assert(at[0]>1&&fabsf(at[1])/at[0]<=tangent*.861f&&fabsf(at[2])/at[0]<=tangent/(2400.0f/1080)*.861f);
+            }
+            memcpy(&widget,objects[21]+0x1c0,sizeof widget);arc=22*.0174532925199433f;radius=540/arc;
+            for(unsigned sample=0;sample<=100;sample++)for(unsigned edge=0;edge<2;edge++) {
+                float theta=arc*((float)sample/100-.5f);
+                float local[3]={radius*(cosf(arc*.5f)-cosf(theta)),-radius*sinf(theta),edge?110.0f:-110.0f},world[3],at[3];
+                for(unsigned k=0;k<3;k++)local[k]*=widget.s[k];q_rot(widget.q,local,world);
+                for(unsigned k=0;k<3;k++)world[k]+=widget.p[k]-current.p[k];q_rot(inv,world,at);
+                assert(at[0]>1&&fabsf(at[1])/at[0]<=tangent*.861f&&fabsf(at[2])/at[0]<=tangent/(2400.0f/1080)*.861f);
+            }
+            current_ms+=16;
+        }
+        assert(!memcmp(before,objects,sizeof before)&&!world_calls&&!restores&&!refreshes);
+    }
+    for(unsigned refusal=0;refusal<8;refusal++) {
+        curved_ready(-110.67f);struct reload_tf current=curved_camera(-110.67f);
+        *(unsigned short*)(objects[21]+0x14c)=0;
+        if(refusal==0)objects[10][0x518]=2;if(refusal==1)*(float*)(objects[10]+0x51c)=NAN;
+        if(refusal==2)*(float*)(objects[10]+0x51c)=0;if(refusal==3)*(float*)(objects[10]+0x51c)=361;
+        if(refusal==4)*(int*)(objects[10]+0x450)=0;if(refusal==5)*(float*)(objects[10]+0x45c)=NAN;
+        if(refusal==6)*(unsigned short*)(objects[10]+0x14c)=0;if(refusal==7)*(void**)(objects[10]+0x20)=objects[0];
+        assert(!fv_camera_menu_tick(objects[8],&current,current_ms));
+    }
+    for(unsigned refusal=0;refusal<4;refusal++) {
+        curved_ready(-110.67f);struct fv_plane child[2];
+        assert(fv_camera_widget_planes(objects[21],objects[8],child,2)==2);
+        if(refusal==0)*(void**)(objects[21]+0x20)=objects[8];
+        if(refusal==1)*(void**)(objects[14]+0xc0)=0;
+        if(refusal==2)*(void**)(objects[14]+0xa0)=objects[8];
+        if(refusal==3)*(void**)(objects[21]+0xc0)=objects[20];
+        assert(!fv_camera_widget_planes(objects[21],objects[8],child,2));
+    }
+    puts("PASS: Cylinder1920x1080 main panel plus real ChildActor-owned Cylinder22degree540x220 Next widget and its44x13hitplane fit404 curved-edge samples for40 stable frames,3 nativeUIScreen families/2 main arcs/5 inherited headings including-110.67; native roots unchanged, planar root fitter still refuses,8 malformed/hidden/foreign refusals");
+    unsigned total=0;
+    for(unsigned capture=0;capture<sizeof native_curves/sizeof *native_curves;capture++) {
+        curved_ready(0);const float* size=native_curves[capture].size;
+        struct reload_tf unit={{0,0,0,1},{0,0,0},{1,1,1},{0,0}};memcpy(objects[10]+0x1c0,&unit,sizeof unit);
+        *(float*)(objects[10]+0x51c)=native_curves[capture].arc;
+        memcpy(objects[10]+0x45c,native_curves[capture].pivot,8);
+        *(int*)(objects[10]+0x450)=(int)size[0];*(int*)(objects[10]+0x454)=(int)size[1];
+        struct fv_plane planes[2];memset(planes,0x5a,sizeof planes);unsigned char saved[sizeof planes];memcpy(saved,planes,sizeof planes);
+        assert(fv_camera_widget_planes(objects[10],objects[8],planes,0)==1&&!memcmp(saved,planes,sizeof planes));
+        assert(fv_camera_widget_planes(objects[10],objects[8],planes,1)==2&&!memcmp(saved,planes,sizeof planes));
+        assert(fv_camera_widget_planes(objects[10],objects[8],planes,2)==2);
+        for(unsigned i=0;i<native_curves[capture].count;i++) {
+            const float* vertex=native_curve_vertices[native_curves[capture].first+i];
+            float tolerance=.004f;
+            assert(vertex[0]>=planes[0].transform.p[0]-tolerance&&vertex[0]<=planes[1].transform.p[0]+tolerance);
+            assert(fabsf(vertex[1]-planes[0].transform.p[1])<=planes[0].width*.5f+tolerance);
+            assert(fabsf(vertex[2]-planes[0].transform.p[2])<=planes[0].height*.5f+tolerance);
+            total++;
+        }
+    }
+    printf("PASS: actual production cylinder bounds enclose%u original ARM64-generated mesh vertices across24 arc/pivot combinations; zero/one-plane capacity refusal writes nothing\n",total);
+}
+static void merc_ready(void){
+    curved_ready(-110.67f);merc_mode=1;results_mode=1;
+    static void* children[303];
+    for(unsigned i=0;i<303;i++)children[i]=objects[merc_edges[i]];
+    for(unsigned i=0;i<304;i++) {
+        unsigned index=merc_nodes[i].index;unsigned char* part=objects[index];memset(part,0,sizeof objects[index]);
+        merc_kind[index]=merc_nodes[i].kind;
+        *(void**)(part+0xa0)=objects[merc_nodes[i].owner];*(void**)(part+0x20)=objects[merc_nodes[i].outer];
+        *(void**)(part+0xc0)=merc_nodes[i].parent?objects[merc_nodes[i].parent]:0;
+        struct{void**data;int count,max;} links={children+merc_nodes[i].first,(int)merc_nodes[i].count,(int)merc_nodes[i].count};
+        memcpy(part+0xd0,&links,sizeof links);memcpy(part+0x1c0,merc_nodes[i].tf,48);
+        *(unsigned short*)(part+0x14c)=(unsigned short)merc_nodes[i].flags;
+    }
+    for(unsigned i=0;i<5;i++) {
+        unsigned actor=merc_owners[i].actor;merc_kind[actor]=16;
+        *(void**)(objects[actor]+0x130)=objects[merc_owners[i].root];
+    }
+    memcpy(objects[10]+0x438,merc_main_widget,sizeof merc_main_widget);
+    for(unsigned w=0;w<2;w++) {
+        unsigned char* part=objects[w?24:21];
+        *(int*)(part+0x450)=540;*(int*)(part+0x454)=220;
+        *(float*)(part+0x45c)=*(float*)(part+0x460)=.5f;
+        part[0x518]=1;*(float*)(part+0x51c)=22;
+    }
+    static void* controls[7];
+    for(unsigned i=0;i<7;i++) {
+        unsigned char* part=objects[merc_controls[i]];controls[i]=part;
+        *(void**)(part+0x308)=objects[8];part[0x264]=i==0||i==2||i==3;
+        *(float*)(part+0x318)=i<2?44:i==3?20:60;
+        *(float*)(part+0x31c)=i<2?13:i==3?20:8;
+    }
+    struct{void**data;int count,max;} list={controls,7,7};memcpy(objects[8]+0x238,&list,sizeof list);
+}
+static struct reload_tf merc_camera(float heading){
+    struct reload_tf eye=curved_camera(heading);eye.p[0]=-9998.6f;eye.p[2]=9967.7f;return eye;
+}
+static void test_live_merc_camera(void){
+    merc_ready();unsigned char before[sizeof objects];memcpy(before,objects,sizeof before);
+    struct fv_plane planes[64];unsigned count=fv_camera_widgets(objects[8],objects[9],planes,64);
+    assert(count==6); // Three visible cylinders, including the disabled native Retry receiver's widget.
+    assert(!enabled(objects[18]) && (objects[24][0x14c]&0x20));
+    const float headings[]={-110.67f,0,179,-179};
+    for(unsigned h=0;h<4;h++) {
+        g_look_yaw=headings[h]*.0174532925199433f;g_menu_view_active=0;
+        float stable_yaw=0,stable_pitch=0,stable_fov=0;
+        for(unsigned frame=0;frame<40;frame++) {
+            struct reload_tf eye=merc_camera(headings[h]);assert(fv_camera_menu_tick(objects[8],&eye,current_ms));
+            float yaw,pitch;head_angles_now(&yaw,&pitch);
+            if(!frame){stable_yaw=yaw;stable_pitch=pitch;stable_fov=fv_camera_menu.fov;}
+            assert(fabsf(yaw-stable_yaw)<.0001f&&fabsf(pitch-stable_pitch)<.0001f&&fabsf(fv_camera_menu.fov-stable_fov)<.0001f);
+            eye=merc_camera(headings[h]);qf_t inv={-eye.q.x,-eye.q.y,-eye.q.z,eye.q.w};
+            const unsigned widgets[]={10,21,24};
+            for(unsigned w=0;w<3;w++) {
+                unsigned char* part=objects[widgets[w]];struct reload_tf tf;memcpy(&tf,part+0x1c0,sizeof tf);
+                float width=(float)*(int*)(part+0x450),height=(float)*(int*)(part+0x454);
+                float arc=*(float*)(part+0x51c)*.0174532925199433f,radius=width/arc;
+                float tangent=tanf(fv_camera_menu.fov*.00872664625997165f);
+                for(unsigned sample=0;sample<=100;sample++)for(unsigned edge=0;edge<2;edge++) {
+                    float angle=arc*((float)sample/100-.5f),local[3]={radius*(cosf(arc*.5f)-cosf(angle)),-radius*sinf(angle),edge?height*.5f:-height*.5f},at[3],world[3];
+                    for(unsigned k=0;k<3;k++)local[k]*=tf.s[k];q_rot(tf.q,local,world);
+                    for(unsigned k=0;k<3;k++)world[k]+=tf.p[k]-eye.p[k];q_rot(inv,world,at);
+                    assert(at[0]>1&&fabsf(at[1])/at[0]<=tangent*.861f&&fabsf(at[2])/at[0]<=tangent/(2400.0f/1080)*.861f);
+                }
+            }
+            current_ms+=16;
+        }
+    }
+    assert(!memcmp(before,objects,sizeof before)&&!world_calls&&!restores&&!refreshes);
+    for(unsigned refusal=0;refusal<9;refusal++) {
+        merc_ready();assert(fv_camera_ui_actor(objects[8],objects[13])&&fv_camera_ui_actor(objects[8],objects[16]));
+        if(refusal==0)merc_kind[13]&=~16u;
+        if(refusal==1)merc_kind[15]&=~4u;
+        if(refusal==2)*(void**)(objects[15]+0x308)=objects[0];
+        if(refusal==3)*(void**)(objects[15]+0xa0)=objects[8];
+        if(refusal==4)*(void**)(objects[15]+0x20)=objects[8];
+        if(refusal==5)*(void**)(objects[13]+0x130)=objects[17];
+        if(refusal==6)*(void**)(objects[15]+0xc0)=objects[9];
+        if(refusal==7)*(void**)(objects[14]+0xc0)=0;
+        if(refusal==8){void** registered=*(void***)(objects[8]+0x238);registered[0]=objects[18];}
+        assert(!fv_camera_ui_actor(objects[8],objects[13]));
+    }
+    merc_ready();merc_kind[15]=(merc_kind[15]&~4u)|8u;objects[15][0x264]=0;
+    assert(fv_camera_ui_actor(objects[8],objects[13]));fv_scroll_class=0;
+    assert(!fv_camera_ui_actor(objects[8],objects[13]));fv_scroll_class=scroll_class;
+    merc_ready();memcpy(before,objects,sizeof before);
+    // Pruned display actors are not native UI receivers, even if their scene objects remain live.
+    assert(!fv_camera_ui_actor(objects[8],objects[26])&&!fv_camera_ui_actor(objects[8],objects[27]));
+    assert(!memcmp(before,objects,sizeof before));
+    // A genuinely oversized screen-owned tree still rejects at the unchanged scene-node cap.
+    for(unsigned i=0;i<304;i++)if(merc_nodes[i].owner==26||merc_nodes[i].owner==27)
+        *(void**)(objects[merc_nodes[i].index]+0xa0)=objects[8];
+    assert(fv_camera_widgets(objects[8],objects[9],planes,64)==65);
+    merc_ready();*(int*)(objects[9]+0xd8)=*(int*)(objects[9]+0xdc)=257;
+    assert(fv_camera_widgets(objects[8],objects[9],planes,64)==65);
+    puts("PASS: exact live Merc304-node/303-edge graph retains256 traversal cap; both132-node decorative display actors pruned, all3 visible cylinders including disabled Retry fit606 native edge samples for40 stable frames at4 inherited headings; every native object byte unchanged");
+    puts("PASS: registered foreign UI actor scope requires native Button/Scroll type, same screen, component Owner/Outer, owned root and real attachment chain;9 changed/foreign registration refusals, disabled Scroll accepted, missing Scroll capability refused, oversized/malformed screen-owned trees still decline at256");
+}
+static void case_ready(void){
+    ready();case_mode=1;current_ms=1000;current_type=2;g_touch_context=2;on_game_thread=1;
+    current_screen=objects[8];current_pawn=objects[11];fv_lobby_zoom_ms=current_ms;
+    *(void**)(objects[11]+0x2d8)=objects[12];*(void**)(objects[12]+0xa0)=objects[11];
+    *(void**)(objects[8]+0xe0)=objects[10]; // Original deferred spawn Owner=MercGrid.
+    // Actual p406 ChildActor topology: Grid.Owner is null; native ParentComponent carries its parent.
+    *(void**)(objects[10]+0x10)=(void*)(uintptr_t)0x1000;*(void**)(objects[10]+0x130)=objects[7];
+    *(void**)(objects[7]+0xa0)=objects[10];*(void**)(objects[7]+0xc0)=objects[29];
+    weak_assign((struct cinema_ui_weak*)(objects[10]+0x160),objects[29]);
+    *(void**)(objects[29]+0x20)=*(void**)(objects[29]+0xa0)=objects[13];
+    *(void**)(objects[29]+0x1f8)=objects[10];*(void**)(objects[29]+0xc0)=objects[14];
+    *(void**)(objects[13]+0x130)=objects[14];*(void**)(objects[14]+0xa0)=objects[13];
+    // Actual p403 eye and original Merc case mesh bounds/local offsets. Exercise an opened-door pose.
+    const float origins[7][3]={{0,0,0},{23.993147f,.12184906f,-.13763428f},{-4.610346f,.03901672f,-.12802124f},
+        {.22019958f,42.471111f,.00024414f},{.10132670f,-42.471310f,-.00022507f},
+        {-1.0079956f,30.837496f,0},{-1.1388311f,-30.799873f,.01393509f}};
+    const float extents[7][3]={{50,50,0},{.68556976f,94.458855f,51.294373f},{8.772614f,114.82268f,52.989166f},
+        {3.945572f,46.297977f,51.337646f},{3.945572f,46.297985f,51.337646f},
+        {3.406403f,43.023586f,51.337646f},{3.406403f,43.023575f,51.337646f}};
+    struct reload_tf frame={{0,0,0,1},{214,0,15150},{1,1,1},{0,0}};memcpy(objects[14]+0x1c0,&frame,sizeof frame);
+    for(unsigned i=0;i<7;i++) {
+        unsigned part=case_parts[i];*(void**)(objects[part]+0xa0)=objects[13];*(void**)(objects[part]+0xc0)=objects[14];
+        *(const void**)(objects[part]+0x440)=(const void*)(uintptr_t)(i+1);
+        memcpy(case_origins[part],origins[i],12);memcpy(case_extents[part],extents[i],12);
+        struct reload_tf mesh=frame;
+        if(i==0){mesh.p[0]-=2.3466511f;mesh.q=(qf_t){0,-.7071067811865475f,0,.7071067811865475f};mesh.s[1]=1.860711f;}
+        else if(i<3){mesh.p[0]-=4.9888544f;mesh.p[1]=.000061f;}
+        else{
+            int left=i==3||i==5;float yaw=(left?-160:160)*.0174532925199433f;
+            mesh.q=(qf_t){0,0,sinf(yaw*.5f),cosf(yaw*.5f)};mesh.p[0]-=13.717896f;mesh.p[1]=left?-97.869156f:97.869156f;
+            float local[3]={i<5?.644428f:1.30278f,i<5?(left?1.507194f:-1.801804f):(left?23.5f:-23.5f),0},world[3];
+            q_rot(mesh.q,local,world);for(unsigned k=0;k<3;k++)mesh.p[k]+=world[k];
+        }
+        memcpy(objects[part]+0x1c0,&mesh,sizeof mesh);
+    }
+    static void* links[7][2];
+    links[0][0]=objects[20];links[0][1]=objects[21];
+    struct{void**data;int count,max;} list={links[0],2,2};memcpy(objects[14]+0xd0,&list,sizeof list);
+    for(unsigned i=0;i<2;i++) {
+        unsigned actor=22+i*3,actor_root=actor+1,widget=actor+2,child=20+i;
+        *(void**)(objects[actor]+0x130)=objects[actor_root];*(void**)(objects[actor]+0xe0)=objects[13];
+        *(void**)(objects[actor_root]+0xa0)=objects[actor];*(void**)(objects[actor_root]+0xc0)=objects[child];
+        *(void**)(objects[child]+0x20)=*(void**)(objects[child]+0xa0)=objects[13];*(void**)(objects[child]+0xc0)=objects[14];
+        *(void**)(objects[child]+0x1f8)=objects[actor];
+        *(void**)(objects[widget]+0xa0)=objects[actor];*(void**)(objects[widget]+0xc0)=objects[actor_root];
+        links[1+i*2][0]=objects[actor_root];list=(typeof(list)){links[1+i*2],1,1};memcpy(objects[child]+0xd0,&list,sizeof list);
+        links[2+i*2][0]=objects[widget];list=(typeof(list)){links[2+i*2],1,1};memcpy(objects[actor_root]+0xd0,&list,sizeof list);
+        struct reload_tf panel={{0,0,1,0},{170,i?145:-145,15140},{.1f,.1f,.1f},{0,0}};
+        memcpy(objects[widget]+0x1c0,&panel,sizeof panel);*(unsigned short*)(objects[widget]+0x14c)=0x20;
+        const int size[2]={1000,1300};memcpy(objects[widget]+0x450,size,sizeof size);
+        *(float*)(objects[widget]+0x45c)=*(float*)(objects[widget]+0x460)=.5f;
+    }
+    // A clipped scrolling child must not enlarge its authored panel canvas.
+    links[6][0]=objects[28];list=(typeof(list)){links[6],1,1};memcpy(objects[24]+0xd0,&list,sizeof list);
+    *(void**)(objects[28]+0xa0)=objects[22];*(void**)(objects[28]+0xc0)=objects[24];
+    struct reload_tf offscreen={{0,0,1,0},{10,1000000,0},{1,1,1},{0,0}};memcpy(objects[28]+0x1c0,&offscreen,sizeof offscreen);
+    *(unsigned short*)(objects[28]+0x14c)=0x20;*(float*)(objects[28]+0x45c)=*(float*)(objects[28]+0x460)=.5f;
+    const int size[2]={1000,1300};memcpy(objects[28]+0x450,size,sizeof size);
+}
+static void case_view(unsigned char view[0x100]){
+    memset(view,0,0x100);float eye[3]={-14,0,15171.5f},authored=90;
+    memcpy(view,eye,12);memcpy(view+0x18,&authored,4);
+}
+static void case_decorative_branch(void){
+    static void* roots[3],*grid[1],*branches[2],*leaves[2][200];
+    roots[0]=objects[20];roots[1]=objects[21];roots[2]=objects[29];grid[0]=objects[7];
+    struct{void**data;int count,max;} list={roots,3,3};memcpy(objects[14]+0xd0,&list,sizeof list);
+    list=(typeof(list)){grid,1,1};memcpy(objects[29]+0xd0,&list,sizeof list);
+    branches[0]=objects[30];branches[1]=objects[31];
+    list=(typeof(list)){branches,2,2};memcpy(objects[7]+0xd0,&list,sizeof list);
+    for(unsigned i=30;i<OBJECT_COUNT;i++){
+        *(void**)(objects[i]+0xa0)=objects[10];
+        *(void**)(objects[i]+0xc0)=objects[i<32?7:i<232?30:31];
+    }
+    for(unsigned i=0;i<268;i++)leaves[i<200?0:1][i<200?i:i-200]=objects[32+i];
+    list=(typeof(list)){leaves[0],200,200};memcpy(objects[30]+0xd0,&list,sizeof list);
+    list=(typeof(list)){leaves[1],68,68};memcpy(objects[31]+0xd0,&list,sizeof list);
+}
+static void test_captured_case_meshes(void){
+    // Source p406_merc_live_bounds.json SHA256: 97c5bca0d4185364f8a0ddee5e95217ef749baa3dd17e8d842ea1f06b75dffc3.
+    case_ready();
+    static const float captured[7][12]={
+        {0.0f,-0.7071067690849304f,0.0f,0.7071067094802856f,211.65335083007812f,0.0f,15150.0f,1.0f,1.8607109785079956f,1.0f,0.0f,0.0f},
+        {0.0f,0.0f,0.0f,1.0f,209.01113891601562f,6.0999998822808266e-05f,15150.0f,1.0f,1.0f,1.0f,0.0f,0.0f},
+        {0.0f,0.0f,0.0f,1.0f,209.01113891601562f,6.0999998822808266e-05f,15150.0f,1.0f,1.0f,1.0f,0.0f,0.0f},
+        {0.0f,0.0f,0.9170600771903992f,0.39874911308288574f,198.7403106689453f,-98.4257583618164f,15150.0f,1.0f,1.0f,1.0f,0.0f,0.0f},
+        {0.0f,0.0f,-0.9170600771903992f,0.39874911308288574f,198.5248565673828f,98.62667846679688f,15150.0f,1.0f,1.0f,1.0f,0.0f,0.0f},
+        {0.0f,0.0f,0.9170600771903992f,0.39874911308288574f,194.4312744140625f,-103.32514953613281f,15150.0f,1.0f,1.0f,1.0f,0.0f,0.0f},
+        {0.0f,0.0f,-0.9170600771903992f,0.39874911308288574f,194.4312744140625f,103.32514953613281f,15150.0f,1.0f,1.0f,1.0f,0.0f,0.0f},
+    };
+    for(unsigned i=0;i<7;i++)memcpy(objects[case_parts[i]]+0x1c0,captured[i],sizeof captured[i]);
+    // Captured panel source SHA256: c0107c32e51f43cc1741d556cd4500bb680c377dd87f884099bc69b9a9ba9b8c.
+    {const float tf[12]={0.0f,0.0f,0.9170600771903992f,0.39874911308288574f,167.0940399169922f,-122.6954345703125f,15150.0f,0.10000000149011612f,0.10000000149011612f,0.10000000149011612f,0.0f,0.0f};
+        const int size[2]={682,980};const float pivot[2]={0.5f,0.5f};
+        memcpy(objects[24]+0x1c0,tf,sizeof tf);memcpy(objects[24]+0x450,size,sizeof size);memcpy(objects[24]+0x45c,pivot,sizeof pivot);
+        *(unsigned short*)(objects[24]+0x14c)=0x4063;objects[24][0x429]=0;objects[24][0x518]=0;objects[22][0x58]=128;}
+    {const float tf[12]={0.0f,0.0f,-0.9170600771903992f,0.39874911308288574f,166.76931762695312f,122.928466796875f,15124.3583984375f,0.10000000149011612f,0.10000000149011612f,0.10000000149011612f,0.0f,0.0f};
+        const int size[2]={682,400};const float pivot[2]={0.5f,0.5f};
+        memcpy(objects[27]+0x1c0,tf,sizeof tf);memcpy(objects[27]+0x450,size,sizeof size);memcpy(objects[27]+0x45c,pivot,sizeof pivot);
+        *(unsigned short*)(objects[27]+0x14c)=0x4063;objects[27][0x429]=0;objects[27][0x518]=0;objects[25][0x58]=128;}
+    // p407's real walk reached256 because physical inventory/character actors contributed344 components.
+    case_decorative_branch();
+    unsigned char before[sizeof objects],view[0x100];memcpy(before,objects,sizeof before);
+    for(unsigned frame=0;frame<10;frame++){
+        case_view(view);fv_menu_camera_view(objects[12],view);float fov;memcpy(&fov,view+0x18,4);
+        assert(fabsf(fov-104.8379586f)<.001f&&fov<130);
+        assert(case_panel_queries[0]==frame+1&&case_panel_queries[1]==frame+1);
+        float tangent=tanf(fov*.00872664625997165f);
+        for(unsigned i=0;i<7;i++)for(unsigned corner=0;corner<8;corner++){
+            unsigned part=case_parts[i];struct reload_tf tf;memcpy(&tf,objects[part]+0x1c0,sizeof tf);
+            float local[3],at[3];for(unsigned k=0;k<3;k++)local[k]=(case_origins[part][k]+(corner&(1u<<k)?case_extents[part][k]:-case_extents[part][k]))*tf.s[k];
+            q_rot(tf.q,local,at);at[0]+=tf.p[0]+14;at[1]+=tf.p[1];at[2]+=tf.p[2]-15171.5f;
+            assert(at[0]>144&&fabsf(at[1])/at[0]<tangent*.861f&&fabsf(at[2])/at[0]<tangent/(2400.0f/1080)*.861f);
+        }
+        for(unsigned i=0;i<2;i++)for(unsigned corner=0;corner<4;corner++){
+            unsigned part=i?27:24;struct reload_tf tf;memcpy(&tf,objects[part]+0x1c0,sizeof tf);
+            int size[2];memcpy(size,objects[part]+0x450,sizeof size);
+            float local[3]={0,(corner&1?.5f:-.5f)*size[0]*tf.s[1],(corner&2?.5f:-.5f)*size[1]*tf.s[2]},at[3];
+            q_rot(tf.q,local,at);at[0]+=tf.p[0]+14;at[1]+=tf.p[1];at[2]+=tf.p[2]-15171.5f;
+            assert(at[0]>1&&fabsf(at[1])/at[0]<tangent*.861f&&fabsf(at[2])/at[0]<tangent/(2400.0f/1080)*.861f);
+        }
+        current_ms+=16;fv_lobby_zoom_ms=current_ms;
+    }
+    assert(bounds_calls==7&&!memcmp(before,objects,sizeof before));
+    // The capacity still declines a genuinely oversized case, while unknown actor-owned branches are pruned.
+    struct fv_case_view walk={.eye={-14,0,15171.5f},.forward={1,0,0},.right={0,1,0},.up={0,0,1},.aspect=2400.0f/1080};
+    *(void**)(objects[7]+0xa0)=0;memcpy(before,objects,sizeof before);
+    assert(fv_console_case_widgets(objects[14],&walk)&&!memcmp(before,objects,sizeof before));
+    *(void**)(objects[7]+0xa0)=objects[13];
+    for(unsigned i=30;i<OBJECT_COUNT;i++)*(void**)(objects[i]+0xa0)=objects[13];
+    memcpy(before,objects,sizeof before);
+    assert(!fv_console_case_widgets(objects[14],&walk)&&!memcmp(before,objects,sizeof before));
+    puts("PASS: actual p406 captured7 mesh transforms/bounds and both captured panel TF/drawsize/pivot/visibility fit all64 corners at104.838degrees below130; native weak ChildActor parent resolution,10stableframes, no native object writes");
+    puts("PASS: actual bounded case traversal prunes270 live physical inventory descendants, preserves both native UIScreen canvases and all native bytes; unknown actor owner pruned, genuinely oversized case still declines at unchanged256 capacity");
+}
+static void test_case_camera(void){
+    case_ready();unsigned char before[sizeof objects],view[0x100],view_before[0x100];memcpy(before,objects,sizeof before);
+    float stable=0;unsigned old_clipped=0;
+    for(unsigned frame=0;frame<40;frame++){
+        case_view(view);memcpy(view_before,view,sizeof view);fv_menu_camera_view(objects[12],view);
+        float fov;memcpy(&fov,view+0x18,4);if(!frame)stable=fov;
+        assert(fov>80&&fov<130&&fabsf(fov-stable)<.0001f&&g_fov_h_deg==fov);
+        memcpy(view+0x18,view_before+0x18,4);assert(!memcmp(view,view_before,sizeof view));
+        float tangent=tanf(fov*.00872664625997165f),old_tangent=tanf(fv_console_fov(90)*.00872664625997165f);
+        for(unsigned i=0;i<7;i++)for(unsigned corner=0;corner<8;corner++){
+            unsigned part=case_parts[i];struct reload_tf mesh;memcpy(&mesh,objects[part]+0x1c0,sizeof mesh);
+            float local[3],world[3];for(unsigned k=0;k<3;k++)local[k]=(case_origins[part][k]+(corner&(1u<<k)?case_extents[part][k]:-case_extents[part][k]))*mesh.s[k];
+            q_rot(mesh.q,local,world);world[0]+=mesh.p[0]+14;world[1]+=mesh.p[1];world[2]+=mesh.p[2]-15171.5f;
+            assert(world[0]>1&&fabsf(world[1])/world[0]<tangent*.861f&&fabsf(world[2])/world[0]<tangent/(2400.0f/1080)*.861f);
+            if(fabsf(world[1])/world[0]>old_tangent||fabsf(world[2])/world[0]>old_tangent/(2400.0f/1080))old_clipped++;
+        }
+        for(unsigned panel=0;panel<2;panel++)for(unsigned corner=0;corner<4;corner++){
+            float depth=184,y=(panel?145:-145)+(corner&1?50:-50),z=15140-15171.5f+(corner&2?65:-65);
+            assert(fabsf(y)/depth<tangent*.861f&&fabsf(z)/depth<tangent/(2400.0f/1080)*.861f);
+        }
+        // Arbitrary row/item/hover changes cannot affect the fixed case fit.
+        objects[6][0x200]=(unsigned char)frame;current_ms+=16;fv_lobby_zoom_ms=current_ms;
+    }
+    objects[6][0x200]=before[6*0x600+0x200];assert(old_clipped&&bounds_calls==7);
+    assert(!memcmp(before,objects,sizeof before)&&!world_calls&&!restores&&!refreshes);
+    for(unsigned refusal=0;refusal<11;refusal++){
+        case_ready();case_view(view);float fov=67.380135f;
+        if(refusal==0)*(void**)(objects[8]+0xe0)=objects[8];
+        if(refusal==1)*(void**)(objects[14]+0xa0)=objects[8];
+        if(refusal==2)*(void**)(objects[18]+0xa0)=objects[8];
+        if(refusal==3)*(void**)(objects[18]+0xc0)=objects[8];
+        if(refusal==4)*(float*)(objects[18]+0x1c0)=NAN;
+        if(refusal==5)*(float*)view=NAN;
+        if(refusal==6)*(float*)(view+0xc)=NAN;
+        if(refusal==7)view[0x31]=1;
+        if(refusal==8)g_comp_h=0;
+        if(refusal==9)*(void**)(objects[18]+0x440)=0;
+        if(refusal==10)bounds_ok=0;
+        assert(!fv_console_case_fov(objects[8],view,&fov)&&fov==67.380135f);g_comp_h=1080;
+    }
+    for(unsigned ordinary=2;ordinary<=3;ordinary++){
+        case_ready();case_mode=(int)ordinary;memcpy(before,objects,sizeof before);
+        for(unsigned frame=0;frame<20;frame++){
+            case_view(view);memcpy(view_before,view,sizeof view);fv_menu_camera_view(objects[12],view);
+            float fov;memcpy(&fov,view+0x18,4);assert(fabsf(fov-67.380135f)<.0001f);
+            memcpy(view+0x18,view_before+0x18,4);assert(!memcmp(view,view_before,sizeof view));
+            current_ms+=16;fv_lobby_zoom_ms=current_ms;
+        }
+        assert(!bounds_calls&&!memcmp(before,objects,sizeof before));
+    }
+    for(unsigned refusal=0;refusal<12;refusal++){
+        case_ready();
+        if(refusal==0)serials[29]++;
+        if(refusal==1)alive[29]=0;
+        if(refusal==2)parent_component_class_ok=0;
+        if(refusal==3)*(void**)(objects[29]+0x1f8)=objects[8];
+        if(refusal==4)*(void**)(objects[29]+0x20)=objects[8];
+        if(refusal==5)*(void**)(objects[29]+0xa0)=objects[8];
+        if(refusal==6)*(void**)(objects[7]+0xc0)=objects[14];
+        if(refusal==7)*(void**)(objects[14]+0xa0)=objects[8];
+        if(refusal==8)*(void**)(objects[29]+0xc0)=objects[8];
+        if(refusal==9)*(int*)(parent_property+0x4c)=0x158;
+        if(refusal==10)*(int*)(parent_property+0x34)=2;
+        if(refusal==11)*(int*)(parent_property+0x38)=4;
+        assert(!fv_console_case_owner(objects[8]));
+    }
+    case_ready();assert(!*(void**)(objects[10]+0xe0)&&fv_console_case_owner(objects[8])==objects[13]);
+    *(void**)(objects[10]+0xe0)=objects[13];assert(fv_console_case_owner(objects[8])==objects[13]);
+    case_ready();current_screen=objects[22];*(void**)(objects[22]+0xe0)=0;
+    *(void**)(objects[22]+0x10)=(void*)(uintptr_t)0x1001;
+    weak_assign((struct cinema_ui_weak*)(objects[22]+0x160),objects[20]);
+    assert(fv_console_case_owner(current_screen)==objects[13]);
+    case_view(view);fv_menu_camera_view(objects[12],view);float child_fov;memcpy(&child_fov,view+0x18,4);assert(fabsf(child_fov-stable)<.0001f);
+    printf("PASS: actual final-view case FOV %.4f fits56 native-box corners and2 detached panel canvases at p403 eye for40 stable frames; old67.38 clips; native Owner plus weak ParentComponent bridge, cached7 assets, clipped-scroll/item/hover independence, all roots/view bytes unchanged and11 invalid-binding/geometry/view refusals\n",stable);
+    puts("PASS: exact native Merc CreateGame/layout capability only; ordinary NewGame/Options retain67.38 for20 stable frames each despite identical wide decorative wings and panel topology; no bounds queries or native/view writes");
+    puts("PASS: actual p406 null Grid.Owner/ParentComponent weak bridge and direct ChildActor screen both reach CreateGame;12 stale/invalid weak/class/ChildActor backlink/Outer/owner/root/attachment/ABI refusals; ordinary Actor.Owner still works");
+}
+static void test_lobby_heading(void){
+    ready();current_ms=10000;g_menu_view_active=0;g_look_pitch=.41f;g_yaw_turned=.37f;
+    const long stamps[]={0,10001,9500,9000,10000,9751,9501};
+    for(int type=0;type<9;type++)for(int heading=-8;heading<=8;heading++)for(unsigned s=0;s<sizeof stamps/sizeof *stamps;s++){
+        g_touch_context=type;g_look_yaw=heading*.39f;g_lobby_menu_ms=stamps[s];
+        int lobby=stamps[s]>0&&current_ms>=stamps[s]&&current_ms-stamps[s]<500;
+        float expected=type==4||((type==2||type==7)&&lobby)?0:g_look_yaw+g_yaw_turned;
+        float yaw,pitch;head_angles_now(&yaw,&pitch);
+        assert(fabsf(yaw-expected)<.00001f&&pitch==mobile_view_pitch(type,g_look_pitch));
+        assert(g_look_yaw==heading*.39f&&g_yaw_turned==.37f&&g_look_pitch==.41f);
+    }
+    puts("PASS: actual head_angles_now1071 context/heading/stamp cases; native Lobby2/7 yaw centred only with positive nonfuture<500ms capability, missing/expired/future and in-world contexts preserve gameplay yaw/quick-turn/pitch; type4 correction retained without gameplay-state writes");
+}
 int main(void){
     ready();assert(fv_console_tick(objects[0],&camera)&&fv_console.used&&world_calls==1&&refreshes==1);
     struct reload_tf button;memcpy(&button,objects[6]+0x1c0,sizeof button);float up[3],axis[3]={0,0,1};q_rot(button.q,axis,up);assert(up[2]>.999f);
@@ -248,12 +810,18 @@ int main(void){
     assert(fv_console_tick(objects[7],&camera));fv_console_tick(0,&camera);assert(restores==1&&!fv_console.used&&!memcmp(objects[2]+0x1c0,&original,sizeof original));
     ready();bounds_ok=0;assert(!fv_console_tick(objects[0],&camera)&&!world_calls);
     ready();*(void**)(objects[3]+0xa0)=objects[6];assert(!fv_console_tick(objects[0],&camera)&&!world_calls);
-    ready();*(void**)(objects[3]+0xc0)=objects[6];assert(!fv_console_tick(objects[0],&camera)&&!world_calls);
+    ready();*(void**)(objects[3]+0xc0)=objects[7];assert(!fv_console_tick(objects[0],&camera)&&!world_calls);
     ready();alive[1]=0;assert(!fv_console_tick(objects[0],&camera)&&!world_calls);
     ready();assert(fv_console_tick(objects[0],&camera));serials[2]++;fv_console_restore();assert(!restores);
     ready();assert(fv_console_tick(objects[0],&camera));*(void**)(objects[2]+0xc0)=objects[6];fv_console_restore();assert(!restores);
     test_camera_fov();
+    test_merchant_fov();
     test_death_camera();
-    puts("PASS: actual fixed backing console/cover fitting and20 stable frames, scroll refresh, original relative restoration; native owner/ancestry/weak serial/parent/bounds guards; actual camera FOV callback accepts only native2/4/7, active camera, GT and positive nonfuture<300ms menu state, preserves all other view bytes");
+    test_results_camera(0);test_results_camera(1);test_results_camera(2);
+    test_curved_results_camera();
+    test_live_merc_camera();
+    test_case_camera();test_captured_case_meshes();
+    test_lobby_heading();
+    puts("PASS: actual fixed backing console/cover fitting and20 stable frames, scroll refresh, original relative restoration; native owner/ancestry/weak serial/parent/bounds guards; fixed-console camera FOV accepts native2/4/7 with active camera, GT and positive nonfuture<300ms menu state; merchant8 uses its separately validated fixed vertical view; all other view bytes preserved");
     return 0;
 }

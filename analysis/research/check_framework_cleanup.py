@@ -21,6 +21,7 @@ assert 'const/16 v9, 0x1a\n    if-lt v8, v9, :platform_notification_legacy' in n
 assert 'Notification$Builder;-><init>(Landroid/content/Context;Ljava/lang/String;)V' in notification
 assert 'Notification$Builder;-><init>(Landroid/content/Context;)V' in notification
 sdk=Path(os.environ['ANDROID_SDK_ROOT'])
+build_tools=Path(os.environ.get('ANDROID_BUILD_TOOLS_ROOT',sdk/'build-tools/36.0.0'))
 for cls,signatures in {
  'android.app.Notification$Builder':['Notification$Builder(android.content.Context);','Notification$Builder(android.content.Context, java.lang.String);','setSmallIcon(int);','setContentTitle(java.lang.CharSequence);','setContentText(java.lang.CharSequence);','setTicker(java.lang.CharSequence);','setStyle(android.app.Notification$Style);','build();'],
  'android.app.Notification$BigTextStyle':['bigText(java.lang.CharSequence);'],
@@ -46,7 +47,7 @@ if len(sys.argv)>1:
                 count+=1
             assert not re.search(rb'L(?:a/|android/(?:arch|support)/)',b),n
     def ids(path):
-        text=subprocess.check_output([str(sdk/'build-tools/36.0.0/aapt2.exe'),'dump','resources',str(path)],encoding='utf-8')
+        text=subprocess.check_output([str(build_tools/'aapt2.exe'),'dump','resources',str(path)],encoding='utf-8')
         return {n:i for i,n in re.findall(r'^\s*resource (0x[0-9a-f]+) (\S+)',text,re.M)}
     old,new=ids(ROOT/'re4_p398a.apk'),ids(apk)
     expected=set(json.loads((ROOT/'analysis/research/resource_cleanup.json').read_text())['retained'])

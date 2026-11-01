@@ -259,6 +259,11 @@ static void touch_aim_tick(void* hand) {
         aim_fps.last_tick=now;aim_fps.from=aim_fps.blend=0;aim_fps.target=0;
         aim_fps.reload_level=aim_fps.reload_from=0;aim_fps.reload_target=0;return;
     }
+    // The selected watch wrist keeps its tracking pose while ordinary FPS framing yields.
+    if (!reloading && !cycling && aim_fps.inventory_hold>=0
+        && side==__atomic_load_n(&g_watch_side,__ATOMIC_ACQUIRE) && watch_pose_weight(now)>0) {
+        aim_fps.last_tick=now;return;
+    }
     void* root=*(void* const*)((const char*)hand+0x130);
     void* head_component=*(void* const*)((const char*)pawn+0x2d8);
     void* mesh=*(void* const*)((const char*)gun+0x540);
@@ -411,7 +416,9 @@ static void touch_aim_tick(void* hand) {
         || rl_interactivity(gun)!=interactivity || rl_primary(gun)!=hand || f_GetCurrentGrip(hand)!=grip
         || (!reloading && !!g_touch_aim!=aiming)
         || __atomic_load_n(&g_touch_weapon_request,__ATOMIC_ACQUIRE) || touch_quickselect_busy()
-        || touch_motion_pose_busy()) {
+        || touch_motion_pose_busy()
+        || (!reloading_now && !touch_weapon_cycle_busy() && aim_fps.inventory_hold>=0
+            && side==__atomic_load_n(&g_watch_side,__ATOMIC_ACQUIRE) && watch_pose_weight(ptr_now_ms())>0)) {
         if (g_touch_context!=1 || g_touch_weapon!=2 || g_touch_cancel
             || __atomic_load_n(&g_touch_weapon_request,__ATOMIC_ACQUIRE)) memset(&aim_fps,0,sizeof aim_fps);
         return;

@@ -39,7 +39,7 @@ subprocess.run([str(clang),'--target=aarch64-linux-android23','-O2','-fPIC','-sh
     '-Wl,--no-undefined','-Wl,-z,max-page-size=16384','-o',str(library),str(snapshot/'re4fix.c'),str(snapshot/'re4fix_overlay.c'),'-llog','-ldl','-lm'],check=True)
 subprocess.run([sys.executable,'-I',str(root/'analysis/repack.py'),str(base),str(unsigned),
     'lib/arm64-v8a/libre4fix.so='+str(library)],check=True)
-tools=sdk/'build-tools/36.0.0';signer=Path(os.environ['RE4_TOOLS_DIR'])
+tools=Path(os.environ.get('ANDROID_BUILD_TOOLS_ROOT',sdk/'build-tools/36.0.0'));signer=Path(os.environ['RE4_TOOLS_DIR'])
 subprocess.run([str(tools/'zipalign.exe'),'-f','4',str(unsigned),str(signed)],check=True)
 subprocess.run(['java','-jar',str(signer/'apksigner.jar'),'sign','--key',str(signer/'testkey.pk8'),
     '--cert',str(signer/'testkey.x509.pem'),str(signed)],check=True)

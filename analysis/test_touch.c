@@ -36,7 +36,7 @@ static void* volatile g_ui_direct_click;
 // Keyframed knife pose lives in re4fix_weapon_pose.h (needs the OVR math); the input header only forwards these.
 static long knife_slash_length(void) { return 640; }
 static void knife_pose_drawn(long now) { (void)now; }
-// Production: hold-to-aim stays the tested default; prompt/world taps belong to the GameThread world helpers.
+// This fixture starts in hold mode; the tap-mode cases select it explicitly below.
 static int input_aim_toggle;
 static int mobile_prefs_aim_toggle(void) { return input_aim_toggle; }
 static int input_aim_walk;
@@ -54,6 +54,9 @@ static int touch_heal_progress_read(long now,float* value){(void)now;*value=inpu
 static unsigned input_toolbar_mask=3;
 static unsigned touch_menu_toolbar_mask(long now){(void)now;return input_toolbar_mask;}
 static volatile int g_touch_density_milli=2750;
+static float input_physical_width,input_physical_height;
+static float render_input_touch_x(float delta,float width) {return input_physical_width && width>1 ? delta*(input_physical_width-1)/(width-1):delta;}
+static float render_input_touch_y(float delta,float height) {return input_physical_height && height>1 ? delta*(input_physical_height-1)/(height-1):delta;}
 static int touch_prompt_hit(float x, float y) { (void)x; (void)y; return 0; }
 static int test_world_taps;
 static void touch_world_tap(float x, float y) { (void)x; (void)y; test_world_taps++; }
@@ -129,10 +132,17 @@ static int touch_typewriter_event(int handle,int type,float x,float y,float widt
 static int touch_sce_state(long now, int* kind, int* running, float* progress) { (void)now; (void)kind; (void)running; (void)progress; return 0; }
 static int input_ammo_available,input_ammo_reads;
 static int touch_hud_ammo_read(long now, int* loaded, int* spare) { (void)now;++input_ammo_reads;*loaded=17;*spare=83;return input_ammo_available; }
-static int touch_map_active(long now) { (void)now; return 0; }
-static void touch_map_zoom_add(float ratio) { (void)ratio; }
+static int input_map_active;
+static unsigned input_push_mask;
+static unsigned touch_push_objects_input_mask(long now) {
+    (void)now;return g_app_input_focus && g_touch_context==1 && !g_touch_cancel ? input_push_mask : 0;
+}
+static float input_map_zoom;
+static int touch_map_active(long now) { (void)now; return input_map_active; }
+static void touch_map_zoom_add(float ratio) { input_map_zoom+=ratio; }
 #include "re4fix_input.h"
 static void touch_gamepad_frame(void) {}
+static void touch_gamepad_reset(void) { g_pad_held_ctl=0;g_pad_move[0]=g_pad_move[1]=0; }
 static int touch_gamepad_recent(long now) { (void)now; return 0; }
 static int touch_gamepad_hud_hidden(long now) { (void)now; return 0; }
 void ovl_cell_uv(int cell, float* u0, float* v0, float* u1, float* v1) {
@@ -144,10 +154,139 @@ static void send_touch(int type, int handle, float x, float y) {
     struct { void* data; int num, max; } arr = {&e, 1, 1};
     touch_process(&arr);
 }
+static void test_push_hold_input(void) {
+    unsigned char state[96];
+    touch_reset();g_touch_cancel=0;g_touch_context=1;g_touch_weapon=2;
+    g_tw=2400;g_th=1080;g_menu_tick_ms=0;
+    struct ctl action=ctl_geometry(C_INTERACT);
+    for(unsigned bit=0;bit<10;bit++)if(0x303u&(1u<<bit)) {
+        input_push_mask=1u<<bit;
+        send_touch(0,444,action.cx*g_tw,action.cy*g_th);
+        usleep(350000);fill_controller_state(state,3);
+        assert(((unsigned*)state)[1]&input_push_mask);
+        input_push_mask=0;fill_controller_state(state,3);
+        assert(!(((unsigned*)state)[1]&0x303u));
+        input_push_mask=1u<<bit;
+        fill_controller_state(state,3);assert(((unsigned*)state)[1]&input_push_mask);
+        send_touch(2,444,action.cx*g_tw,action.cy*g_th);fill_controller_state(state,3);
+        assert(!(((unsigned*)state)[1]&input_push_mask));
+    }
+    input_push_mask=1;
+    send_touch(0,444,action.cx*g_tw,action.cy*g_th);fill_controller_state(state,3);
+    touch_reset();fill_controller_state(state,3);assert(!(((unsigned*)state)[1]&1u));
+    input_push_mask=0;
+    puts("PASS: actual touch Interact holds the authored push face beyond initial pulse; capability loss, release and reset retire it");
+}
 static void tap(int z) {
     struct ctl c=ctl_geometry(z);
     float x = c.cx * g_tw, y = c.cy * g_th;
     send_touch(0, 2, x, y); send_touch(2, 2, x, y);
+}
+static void send_physical_touch(int type,int handle,float x,float y) {
+    send_touch(type,handle,x*(g_tw-1)/input_physical_width,y*(g_th-1)/input_physical_height);
+}
+static void test_render_scale_calibration(void) {
+    const int extents[][2]={{2400,1080},{1200,540},{1608,724},{1600,720},{1800,810},{2040,918}};
+    float baseline[6]={0};
+    input_physical_width=2400;input_physical_height=1080;
+    for(unsigned scale=0;scale<sizeof extents/sizeof *extents;scale++) {
+        touch_reset();g_touch_cancel=0;g_touch_context=1;g_menu_tick_ms=0;g_touch_weapon=2;
+        g_tw=g_comp_w=extents[scale][0];g_th=g_comp_h=extents[scale][1];
+        input_settings=(struct touch_mobile_settings){1,1,0,0,60};
+        input_qs_ready=input_qs_busy=input_motion_busy=input_gr_busy=input_assist=input_hud_valid=0;
+        g_look_yaw=g_look_pitch=0;
+        send_physical_touch(0,320,1450,600);send_physical_touch(1,320,1570,560);
+        float measured[6]={g_look_yaw,g_look_pitch,0,0,0,0};
+        send_physical_touch(2,320,1570,560);
+        touch_reset();g_touch_cancel=0;g_touch_weapon=2;
+        float radius=58.0f*g_touch_density_milli/1000.0f;
+        send_physical_touch(0,321,300,700);
+        send_physical_touch(1,321,300+radius*.1f,700);assert(!g_lstick_x && !g_lstick_y);
+        send_physical_touch(1,321,300+radius*.448f,700-radius*.336f);
+        measured[2]=g_lstick_x;measured[3]=g_lstick_y;
+        assert(fabsf(measured[2]-.4f)<.001f && fabsf(measured[3]-.3f)<.001f);
+        send_physical_touch(1,321,300+radius*1.6f,700-radius*1.2f);
+        assert(fabsf(hypotf(g_lstick_x,g_lstick_y)-1)<.00001f);
+        send_physical_touch(2,321,300+radius*1.6f,700-radius*1.2f);assert(!g_lstick_x && !g_lstick_y);
+        struct vt oversized={0};g_look_yaw=g_look_pitch=0;
+        touch_drag_look(&oversized,6000*(g_tw-1)/2400,6000*(g_th-1)/1080,0);
+        measured[4]=g_look_yaw;measured[5]=g_look_pitch;assert(g_look_pitch==-1.4f);
+        if(!scale)memcpy(baseline,measured,sizeof baseline);
+        else for(int i=0;i<6;i++)assert(fabsf(measured[i]-baseline[i])<.00002f);
+        // The fixed-pixel gesture thresholds remain physical, including actual End and cinema paths.
+        assert(touch_physical_distance(29*(g_tw-1)/2400,0)<30);
+        assert(touch_physical_distance(31*(g_tw-1)/2400,0)>30);
+        assert(touch_physical_distance(39*(g_tw-1)/2400,0)<40);
+        assert(touch_physical_distance(41*(g_tw-1)/2400,0)>40);
+        touch_reset();g_touch_cancel=0;g_touch_context=1;g_touch_weapon=2;
+        usleep(400000);int taps=test_world_taps;
+        send_physical_touch(0,322,1400,600);send_physical_touch(2,322,1429,600);assert(test_world_taps==taps+1);
+        send_physical_touch(0,322,1400,600);send_physical_touch(2,322,1431,600);assert(test_world_taps==taps+1);
+        usleep(400000);send_physical_touch(0,322,1400,600);send_physical_touch(2,322,1400,600);g_qturn_request_ms=0;
+        send_physical_touch(0,322,1559,600);send_physical_touch(2,322,1559,600);assert(g_qturn_request_ms>0);
+        usleep(400000);send_physical_touch(0,322,1400,600);send_physical_touch(2,322,1400,600);g_qturn_request_ms=0;
+        send_physical_touch(0,322,1561,600);send_physical_touch(2,322,1561,600);assert(!g_qturn_request_ms);
+        touch_reset();g_touch_cancel=0;g_touch_context=4;g_menu_tick_ms=now_ms();input_map_active=1;input_map_zoom=0;
+        send_physical_touch(0,323,1000,500);send_physical_touch(0,324,1050,500);assert(g_pinch.active);
+        send_physical_touch(1,324,1100,500);assert(fabsf(input_map_zoom-2)<.00001f);
+        send_physical_touch(2,323,1000,500);send_physical_touch(2,324,1100,500);input_map_active=0;
+        touch_reset();g_touch_cancel=0;g_touch_context=3;g_menu_tick_ms=0;g_cutscene_skippable_ms=now_ms();
+        send_physical_touch(0,325,1400,600);send_physical_touch(1,325,1429,600);
+        struct ovl_quad quads[64];touch_overlay_quads(quads,64);assert(!vt_find(325)->skip);
+        send_physical_touch(1,325,1431,600);touch_overlay_quads(quads,64);assert(vt_find(325)->skip==2);
+        touch_reset();g_touch_cancel=0;g_touch_context=1;g_menu_tick_ms=0;
+    }
+    input_physical_width=input_physical_height=0;g_tw=g_comp_w=2400;g_th=g_comp_h=1080;
+    puts("PASS: actual input calibration preserves physical look/stick/diagonal/deadzone/clamp/release and 30px taps/skip,40px pinch,160px quick-turn across100/50/67/75/85% including native-aligned67%");
+}
+static void test_editable_touch_layout(void) {
+    unsigned char state[96];
+    touch_reset();g_touch_cancel=0;g_touch_context=1;g_menu_tick_ms=0;g_touch_weapon=2;
+    g_tw=g_comp_w=2400;g_th=g_comp_h=1080;
+    input_qs_ready=input_qs_busy=input_motion_busy=input_gr_busy=0;
+    input_settings=(struct touch_mobile_settings){1,1,0,0,60};
+    struct ctl left=touch_left_fire_geometry(),right=ctl_geometry(C_FIRE),aim=ctl_geometry(C_AIM);
+    assert(ctl_at(left.cx*g_tw,left.cy*g_th,0)==TOUCH_LAYOUT_LEFT_FIRE);
+    send_touch(0,310,aim.cx*g_tw,aim.cy*g_th);
+    send_touch(0,311,left.cx*g_tw,left.cy*g_th);
+    send_touch(0,312,1500,650);float yaw=g_look_yaw;
+    send_touch(1,312,1580,650);fill_controller_state(state,3);
+    assert(g_touch_aim && g_look_yaw!=yaw && ((float*)state)[5]==1 && vt_find(311)->left_fire);
+    send_touch(0,313,right.cx*g_tw,right.cy*g_th);fill_controller_state(state,3);
+    usleep(200000);send_touch(2,311,left.cx*g_tw,left.cy*g_th);fill_controller_state(state,3);
+    assert(((float*)state)[5]==1 && g_touch_aim);
+    send_touch(2,313,right.cx*g_tw,right.cy*g_th);fill_controller_state(state,3);
+    assert(((float*)state)[5]==0 && g_touch_aim);
+    touch_reset();g_touch_cancel=0;g_touch_context=1;g_touch_weapon=1;g_menu_tick_ms=0;
+    send_touch(0,314,left.cx*g_tw,left.cy*g_th);yaw=g_look_yaw;
+    send_touch(1,314,left.cx*g_tw+100,left.cy*g_th);assert(g_look_yaw==yaw);
+    touch_reset();g_touch_cancel=0;g_touch_context=1;g_touch_weapon=2;g_menu_tick_ms=0;
+    float values[TOUCH_LAYOUT_FLOATS];
+    for(int slot=0;slot<TOUCH_LAYOUT_COUNT;slot++) {
+        struct ctl c=slot==TOUCH_LAYOUT_LEFT_FIRE ? touch_left_fire_geometry() : ctl_geometry(slot);
+        values[slot*4]=c.cx;values[slot*4+1]=c.cy;values[slot*4+2]=c.r;values[slot*4+3]=1;
+    }
+    values[C_FIRE*4]=.45f;values[C_FIRE*4+1]=.5f;values[C_FIRE*4+2]=.06f;
+    assert(touch_layout_valid(values));
+    send_touch(0,315,right.cx*g_tw,right.cy*g_th);fill_controller_state(state,3);assert(((float*)state)[5]==1);
+    assert(touch_layout_replace(values));fill_controller_state(state,3);assert(((float*)state)[5]==0 && vt_find(315)->role==RT_NONE);
+    assert(ctl_at(.45f*g_tw,.5f*g_th,0)==C_FIRE && ctl_at(right.cx*g_tw,right.cy*g_th,0)!=C_FIRE);
+    struct ctl moved=ctl_geometry(C_FIRE);assert(fabsf(moved.cx-.45f)<.00001f && fabsf(moved.r-.06f)<.00001f);
+    input_settings=(struct touch_mobile_settings){1,1.25f,.08f,.08f,60};
+    moved=ctl_geometry(C_FIRE);assert(fabsf(moved.cx-.45f)<.00001f && fabsf(moved.r-.06f)<.00001f);
+    float saved=values[0];values[0]=NAN;assert(!touch_layout_replace(values));values[0]=saved;
+    values[2]=.019f;assert(!touch_layout_replace(values));values[2]=.06f;
+    values[3]=2;assert(!touch_layout_replace(values));values[3]=0;
+    values[TOUCH_LAYOUT_LEFT_FIRE*4+3]=0;assert(touch_layout_replace(values));
+    assert(ctl_visible(C_FIRE,0) && !touch_layout_shown(C_FIRE) && !touch_layout_shown(TOUCH_LAYOUT_LEFT_FIRE));
+    assert(ctl_at(.45f*g_tw,.5f*g_th,0)!=C_FIRE);
+    g_pad_held_ctl=1u<<C_FIRE;g_fire_slot=g_fire_side=-1;fill_controller_state(state,3);
+    assert(((float*)state)[5]==1);g_pad_held_ctl=0;
+    values[0]=0;values[1]=1;values[3]=1;assert(touch_layout_replace(values));
+    moved=ctl_geometry(C_FIRE);assert(moved.cx>0 && moved.cy<1);
+    g_touch_layout_custom=0;input_settings=(struct touch_mobile_settings){1,1,0,0,60};
+    touch_reset();g_touch_cancel=0;
+    puts("PASS: editable shared geometry, bounds/validation, defaults/legacy settings, hidden touch preserves pad, dual-fire release, aim/look+left fire and no left-fire camera drag");
 }
 static void test_mobile_repair_input(void) {
     touch_reset();g_touch_cancel=0;g_touch_context=1;g_touch_weapon=2;g_menu_tick_ms=0;
@@ -864,6 +1003,7 @@ static void test_requested_controls(void) {
     puts("PASS: requested controls: walking ADS cap/release, inventory/vault retires aim finger, held knife look, immediate toolbar A without game-Start confirmation, no cutscene menu");
 }
 int main(void) {
+    test_push_hold_input();
     test_linear_look_layout();
     test_pause_aim_retirement();
     const int native_health_colours[][3]={{0,1200,0},{400,1200,0},{401,1200,1},{800,1200,1},{801,1200,2},
@@ -1000,6 +1140,8 @@ int main(void) {
     test_knife_watch_holds();
     test_requested_controls();
     test_mobile_repair_input();
+    test_editable_touch_layout();
+    test_render_scale_calibration();
     for(int context=1;context<=7;context++){
         touch_reset();g_touch_cancel=0;g_touch_context=context;g_menu_tick_ms=now_ms();g_input_context=-1;
         assert(touch_mobile_back());fill_controller_state(state,3);

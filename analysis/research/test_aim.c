@@ -15,6 +15,9 @@ _Static_assert(sizeof(struct reload_tf)==48 && _Alignof(struct reload_tf)==16 &&
 
 static volatile int g_touch_context=1,g_touch_weapon=2,g_touch_aim,g_touch_cancel;
 static volatile int g_reload_phase,g_touch_reload_request,g_touch_weapon_request,g_aim_diag_request;
+static volatile long g_watch_since_ms,g_watch_until_ms;
+static volatile int g_watch_side;
+/* WATCH_WEIGHT */
 static unsigned char pawn[0x2e0],other_pawn[0x2e0],hand[0x51c],left[0x51c],root_component[0x1f0],gun[0x11a0],shotgun_root[0x1f0];
 static unsigned char hand_class[0x60],pawn_class[0x60],gun_class[0x60],gun_base_class[0x60],component_class[0x60],grip[0x28],mesh[0x520],mesh_class[0x60],mesh_table[0x438];
 static const void* gun_chain[1];
@@ -22,7 +25,7 @@ static void *owner=pawn,*active=pawn,*weapon=gun,*held=&grip,*primary=hand;
 static const void* foreign_hand;
 static unsigned active_type=1;
 static int paused,valid_player=1,pistol=1,registered=1,interactivity=2,reloading,writes,tf_calls,diagnostic_logs,reset_in_getter;
-static int post_logs,simulate_setter,interactivity_in_getter=-1;
+static int post_logs,simulate_setter,interactivity_in_getter=-1,watch_in_getter;
 static int blending,flourishing,recoiling;
 static long test_now=10000;
 static long ptr_now_ms(void) { return test_now; }
@@ -69,7 +72,7 @@ static int get_interactivity(const void* g) { (void)g;return interactivity; }
 static int is_reloading(void* g) { (void)g;return reloading; }
 static int reload_is_pistol(void* g) { (void)g;return pistol; }
 static int reload_grip_registered(void* g) { return g==&grip && registered; }
-static struct reload_tf head_transform(const void* p) { assert(p==pawn);tf_calls++;if(reset_in_getter)g_touch_cancel=1;if(interactivity_in_getter>=0)interactivity=interactivity_in_getter;return head; }
+static struct reload_tf head_transform(const void* p) { assert(p==pawn);tf_calls++;if(reset_in_getter)g_touch_cancel=1;if(interactivity_in_getter>=0)interactivity=interactivity_in_getter;if(watch_in_getter){g_watch_since_ms=test_now-220;g_watch_until_ms=test_now+500;}return head; }
 static struct reload_tf sight_transform(const void* g) { assert(g==gun);tf_calls++;return sights; }
 static struct aim_fire_tf fire_transform(const void* g) { assert(g==gun);tf_calls++;return fire; }
 static struct reload_tf socket_transform(const void* m,unsigned long long name,int space) { assert(m==mesh && name==0x123400005678ULL && space==0);tf_calls++;return raw_fire; }
@@ -688,5 +691,61 @@ int main(void) {
     fixture_frame=17;g_pose_latch_frame=16;g_pose_trace=1;count=writes;int trace_logs=diagnostic_logs;
     touch_aim_tick(hand);g_pose_trace=0;
     assert(writes==count+1&&diagnostic_logs==trace_logs+1&&!g_pose_latch_lock&&fixture_frame==17&&g_pose_latch_frame==16);
+    for(int side=0;side<2;side++) {
+        memset(&aim_fps,0,sizeof aim_fps);g_watch_since_ms=g_watch_until_ms=0;g_watch_side=side;
+        fixture_shotgun_reference=fixture_cycle_busy=fixture_motion_busy=fixture_equip_busy=0;
+        g_touch_cancel=g_touch_aim=g_reload_phase=g_touch_reload_request=g_touch_weapon_request=0;
+        g_touch_context=active_type=1;g_touch_weapon=2;paused=0;valid_player=1;interactivity=2;
+        owner=active=pawn;primary=hand;weapon=gun;held=grip;fixture_fire_side=side;hand[0x314]=(unsigned char)side;
+        head=base;head.p[2]=150;hand_pose=base;hand_pose.p[0]=17;hand_pose.p[2]=136;
+        memcpy(root_component+0x1c0,&hand_pose,sizeof hand_pose);
+        fire.tf=base;fire.tf.p[0]=37;fire.tf.p[1]=1;fire.tf.p[2]=148;raw_fire=fire.tf;sights=fire.tf;simulate_setter=1;
+        fixture_world_fov=fixture_weapon_fov=90;g_fov_h_deg=90;
+        test_now+=10000;touch_aim_tick(hand);test_now+=g_gun_draw_ms;touch_aim_tick(hand);
+        struct reload_tf calibration=aim_fps.fire_local;long drawn=aim_fps.drawn_at;
+        struct reload_tf raised=last_pose;raised.p[0]=24;raised.p[1]=side?10:-10;raised.p[2]=163;
+        raised.q=q_mul((qf_t){0,sinf(.65f),0,cosf(.65f)},(qf_t){sinf(.78f),0,0,cosf(.78f)});
+        world_transform(root_component,&raised,0,0,0);
+        unsigned char watch_root[sizeof root_component],watch_gun[sizeof gun],watch_pawn[sizeof pawn];
+        memcpy(watch_root,root_component,sizeof watch_root);memcpy(watch_gun,gun,sizeof watch_gun);memcpy(watch_pawn,pawn,sizeof watch_pawn);
+        int before_watch=writes;g_watch_since_ms=test_now-220;g_watch_until_ms=test_now+10000;
+        for(int frame=0;frame<30;frame++) {
+            test_now+=250;touch_aim_tick(hand);
+            assert(writes==before_watch && !memcmp(watch_root,root_component,sizeof watch_root));
+            assert(!memcmp(watch_gun,gun,sizeof watch_gun)&&!memcmp(watch_pawn,pawn,sizeof watch_pawn));
+            assert(aim_fps.last_tick==test_now&&aim_fps.drawn_at==drawn&&aim_fps.gun==gun);
+            assert(!memcmp(&calibration,&aim_fps.fire_local,sizeof calibration));
+        }
+        count=derived_calls;hook_aim_bio4_hand(hand,.016f);
+        assert(derived_calls==count+1&&writes==before_watch);
+        fixture_shotgun_reference=1;count=post_calls;int watch_mesh=mesh_writes;
+        hook_aim_shotgun_post(gun,.016f);
+        assert(post_calls==count+1&&writes==before_watch&&mesh_writes==watch_mesh);
+        fixture_shotgun_reference=0;
+        g_watch_until_ms=test_now;test_now+=110;touch_aim_tick(hand);assert(writes==before_watch);
+        test_now+=110;touch_aim_tick(hand);assert(writes==before_watch+1&&aim_fps.drawn_at==drawn);
+        assert(!memcmp(&calibration,&aim_fps.fire_local,sizeof calibration));
+        for(int k=0;k<3;k++)assert(fabsf(fire.tf.p[k]-head.p[k]-(k==1?(side?1:-1)*g_gun_hip[k]:g_gun_hip[k]))<.001f);
+        g_watch_since_ms=test_now-220;g_watch_until_ms=test_now+10000;g_watch_side=1-side;
+        count=writes;touch_aim_tick(hand);assert(writes==count+1);g_watch_side=side;
+        unsigned char watch_cache[sizeof aim_fps];memcpy(watch_cache,&aim_fps,sizeof aim_fps);
+        owner=other_pawn;count=writes;touch_aim_tick(hand);owner=pawn;
+        assert(writes==count&&!memcmp(watch_cache,&aim_fps,sizeof aim_fps));
+        g_reload_phase=1;touch_aim_tick(hand);assert(writes==count+1);g_reload_phase=0;
+        reloading=1;touch_aim_tick(hand);assert(writes==count+2);reloading=0;
+        g_touch_reload_request=1;touch_aim_tick(hand);assert(writes==count+3);g_touch_reload_request=0;
+        fixture_cycle_busy=1;touch_aim_tick(hand);assert(writes==count+4);fixture_cycle_busy=0;
+        g_reload_phase=7;touch_aim_tick(hand);assert(writes==count+4);g_reload_phase=0;
+        count=writes;touch_aim_inventory_prepare(side?hand:left);
+        assert(writes==count+1&&aim_fps.inventory_hold<0&&aim_fps.inventory_root==root_component);
+        touch_aim_inventory_result(0);assert(!aim_fps.inventory_hold);
+        g_watch_since_ms=g_watch_until_ms=0;watch_in_getter=1;count=writes;int watch_getters=tf_calls;
+        memcpy(watch_root,root_component,sizeof watch_root);touch_aim_tick(hand);watch_in_getter=0;
+        assert(tf_calls>watch_getters&&writes==count&&!memcmp(watch_root,root_component,sizeof watch_root));
+        assert(aim_fps.last_tick==test_now);
+        g_touch_cancel=3;touch_aim_tick(hand);assert(writes==count&&!aim_fps.gun);g_touch_cancel=0;
+        g_watch_since_ms=g_watch_until_ms=0;
+    }
+    puts("PASS: actual selected primary wrist retains tracking pose through7.5s hold, late hand/shotgun callbacks and release easing without cache/draw replay; opposite wrist unchanged, reload/cycle/phase7/Inventory priority and foreign/cancel/final-getter watch guards retained");
     return 0;
 }

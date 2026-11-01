@@ -28,7 +28,21 @@ with (root/"apk_decoded/lib/arm64-v8a/libUE4.so").open("rb") as stream:
         for address,value in fields:
             assert struct.unpack_from("<I",native,off(address+0x24,4))[0]==value,hex(address)
         assert struct.unpack_from("<q",native,off(0x9e0fee8,8))[0]==2
+        # Native menu Tick updates the cached hover itself; controller poses are cached separately.
+        for caller,target in ((0x6310640,0x6298468),(0x6310650,0x6310320),
+                              (0x63103b8,0x6374250),(0x63103dc,0x63769bc),
+                              (0x6337eec,0x6323c3c),(0x6337ef8,0x6323c3c),
+                              (0x633a7a8,0x6323f48),(0x633ab14,0x61c867c)):
+            word=struct.unpack_from('<I',native,off(caller,4))[0]
+            assert word&0xfc000000==0x94000000,hex(caller)
+            immediate=word&0x3ffffff
+            if immediate&0x2000000:immediate-=0x4000000
+            assert caller+4*immediate==target,hex(caller)
+        assert struct.unpack_from('<II',native,off(0x6323f48,8))==(0x9100f000,0xd65f03c0)
+        assert struct.unpack_from('<II',native,off(0x624d654,8))==(0xbd423c00,0xd65f03c0)
+        assert struct.unpack_from('<f',native,off(0x42f9a8c,4))[0]==struct.unpack('<f',struct.pack('<f',.1))[0]
 print("PASS: 22 native preimages, eight UI output/ownership fields and authored Grip enum",flush=True)
+print("PASS: original menu Tick updates native cached hover before adapter; eight controller/hand/UI calls, cached motion-state getter and native0.10s rotation smoothing",flush=True)
 for name in ["check_inventory_drag_native.py","check_inventory_ui_action_native.py"]:
     subprocess.run([sys.executable,"-I",str(root/"analysis/research"/name)],check=True)
 assert "pthread_mutex_" not in code and "g_grip_latched" not in code and "g_cmd_until" not in code

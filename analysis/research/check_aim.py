@@ -101,6 +101,8 @@ for signature in ('static int reload_tf_valid(','static int reload_marker_valid(
     math+=reload[start:reload.index('\n}',start)+2]+'\n'
 source=(root/'analysis/research/test_aim.c').read_text(encoding='utf8')
 source=source.replace('/* SHARED_MATH */',math).replace('AIM_HEADER',header.as_posix())
+start=main.index('static float watch_pose_weight(')
+source=source.replace('/* WATCH_WEIGHT */',main[start:main.index('\n}',start)+2])
 source=source.replace('/* NATIVE_IDENTITY */','static const unsigned char native_identity[48]={'+','.join(str(x) for x in identity)+'};')
 diag=(root/'analysis/re4fix_aim_diag.h').read_text(encoding='utf8')
 source=source.replace('/* FIRE_ABI */',diag[diag.index('struct __attribute__((aligned(16))) aim_fire_tf'):diag.index('static struct aim_fire_tf (*aim_fire)')])
@@ -127,8 +129,7 @@ with tempfile.TemporaryDirectory(prefix='re4-aim-align-check-') as temporary:
         f'/LIBPATH:{vc/"lib/x64"}',f'/LIBPATH:{sdk/"Lib/10.0.26100.0/ucrt/x64"}',
         f'/LIBPATH:{sdk/"Lib/10.0.26100.0/um/x64"}'],check=True)
     subprocess.run([str(exe)],check=True)
-    # The same fixture must reject unbounded/early-only recoil handling and
-    # the old inventory depth captured against the outgoing ADS camera FOV.
+    # The same fixture rejects stale/late pose writers and calibration regressions.
     # Mutate only the tested source line, leaving the C fixture unchanged.
     original=header.read_text(encoding='utf8')
     for label,old,new,failure in (
@@ -136,6 +137,8 @@ with tempfile.TemporaryDirectory(prefix='re4-aim-align-check-') as temporary:
         ('early_only','if(touch_weapon_cycle_pose_reference(primary,gun,&reference))touch_aim_tick(primary);','(void)reference;','angle<=.10473f&&distance<=9.001f'),
         ('inventory_ads_fov','aim_fps.inventory_hold<0 ? (float)mobile_prefs_fov():g_fov_h_deg','g_fov_h_deg','aim_fps.inventory_pose.p[k]-future_hip.p[k]'),
         ('ordinary_pause_unprepared','touch_aim_inventory_prepare(rl_left(pawn));','(void)pawn;','aim_fps.inventory_hold==1&&!aim_fps.blend'),
+        ('watch_cache_expiry','aim_fps.last_tick=now;return;','return;','aim_fps.last_tick==test_now&&aim_fps.drawn_at==drawn'),
+        ('watch_callback_guard','|| (!reloading_now && !touch_weapon_cycle_busy() && aim_fps.inventory_hold>=0\n            && side==__atomic_load_n(&g_watch_side,__ATOMIC_ACQUIRE) && watch_pose_weight(ptr_now_ms())>0)','','tf_calls>watch_getters&&writes==count'),
     ):
         assert original.count(old)==1
         candidate=directory/(label+'.h');candidate.write_text(original.replace(old,new),encoding='utf8')

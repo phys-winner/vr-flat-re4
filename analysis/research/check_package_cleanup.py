@@ -31,7 +31,7 @@ for p in (ROOT/'analysis').glob('*'):
 for n in report['obb_renames']:
     p=ROOT/'com.Armature.VR4'/n['new'];assert p.stat().st_size==n['bytes'] and not p.with_name(n['old']).exists()
 if len(sys.argv)>1:
-    apk=Path(sys.argv[1]);tools=Path(os.path.join(os.environ['ANDROID_SDK_ROOT'], 'build-tools/36.0.0'))
+    apk=Path(sys.argv[1]);tools=Path(os.environ.get('ANDROID_BUILD_TOOLS_ROOT',os.path.join(os.environ['ANDROID_SDK_ROOT'], 'build-tools/36.0.0')))
     manifest=subprocess.check_output([str(tools/'aapt2.exe'),'dump','xmltree',str(apk),'--file','AndroidManifest.xml'],text=True,encoding='utf-8')
     assert '"com.Armature.VR4"' in manifest and 'debuggable' not in manifest and 'ACCESS_NETWORK_STATE' not in manifest
     badging=subprocess.check_output([str(tools/'aapt2.exe'),'dump','badging',str(apk)],text=True,encoding='utf-8')
@@ -43,7 +43,12 @@ if len(sys.argv)>1:
         assert not any(any(n.endswith('/'+lib) for lib in report['removed_libraries']) for n in z.namelist())
         assert not any(n in z.namelist() for n in ['build-data.properties','error_prone/Annotations.gwt.xml'])
         for p in list((app/'res').rglob('icon.png'))+[app/'res/drawable-nodpi/launcher_foreground.png']:
-            with Image.open(p) as source, Image.open(io.BytesIO(z.read(p.relative_to(app).as_posix()))) as compiled:
+            target=p.relative_to(app).as_posix()
+            if p.name=='launcher_foreground.png':
+                candidates=[n for n in ('res/drawable-nodpi/launcher_foreground.png','res/drawable-nodpi-v4/launcher_foreground.png') if n in z.namelist()]
+                assert len(candidates)==1,candidates
+                target=candidates[0]
+            with Image.open(p) as source, Image.open(io.BytesIO(z.read(target))) as compiled:
                 assert source.size==compiled.size and source.convert('RGBA').tobytes()==compiled.convert('RGBA').tobytes(),p
         assert z.read('lib/arm64-v8a/libre4fix.so')==(app/'lib/arm64-v8a/libre4fix.so').read_bytes()
     print('APK SHA256',hashlib.sha256(apk.read_bytes()).hexdigest())

@@ -12,6 +12,12 @@ static unsigned touch_menu_toolbar_mask(long now) {
     return stamp>0 && now>=stamp && now-stamp<=400 && (((unsigned)snapshot>>4)&15)==(unsigned)g_touch_context
         ? (unsigned)snapshot&7 : 0;
 }
+static unsigned touch_menu_title_mask(long now) {
+    uint64_t snapshot=__atomic_load_n(&fv_action_snapshot,__ATOMIC_ACQUIRE);
+    long stamp=(long)(snapshot>>8);
+    return (snapshot&8u) && stamp>0 && now>=stamp && now-stamp<=400
+        && (((unsigned)snapshot>>4)&15)==(unsigned)g_touch_context ? (unsigned)snapshot&7 : 0;
+}
 static void* fv_action_function(void* object,const char* wanted) {
     if (!pv_alive(object) || !phone_inspect_ready) return 0;
     const char* cls=*(const char* const*)((const char*)object+0x10);
@@ -161,7 +167,10 @@ static void fv_title_intro_tick(long now,unsigned type) {
 }
 static void fv_actions_publish(void* screen,long now) {
     unsigned mask=0,type=phone_type ? phone_type():0;
-    if(fv_actions_ready && now>0 && cinema_on_game_thread() && !screen)mask=fv_title_action_mask(now,type);
+    if(fv_actions_ready && now>0 && cinema_on_game_thread() && !screen) {
+        mask=fv_title_action_mask(now,type);
+        if(mask)mask|=8u; // Title marker is separate from ordinary UI A/B capability bits.
+    }
     if(fv_actions_ready && now>0 && screen && pv_alive(screen) && cinema_on_game_thread()
         && fv_screen_class && menu_visual_layout(screen,fv_screen_class(),0x248)) {
         void* owner=fv_object_property(screen,"TrifoldBaseBP");

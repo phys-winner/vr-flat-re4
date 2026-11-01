@@ -125,6 +125,9 @@ static void mobile_android_request_files(void) {
 static void mobile_android_request_language(void) {
     int idle=0; __atomic_compare_exchange_n(&g_mobile_files_request,&idle,2,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE);
 }
+static void mobile_android_request_layout(void) {
+    int idle=0; __atomic_compare_exchange_n(&g_mobile_files_request,&idle,3,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE);
+}
 
 static void touch_mobile_android_tick(void) {
     if (!g_touch_gt_tid || gettid()!=g_touch_gt_tid) return;
@@ -151,7 +154,7 @@ static void touch_mobile_android_tick(void) {
     mobile_android_log_locale();
     if (!f_mobile_java_env || !__atomic_load_n(&g_mobile_files_request,__ATOMIC_ACQUIRE)) return;
     int request=__atomic_exchange_n(&g_mobile_files_request,0,__ATOMIC_ACQ_REL);
-    if (request==1 || request==2) mobile_android_call_thunk(request==2 ? "AndroidThunkJava_ShowMobileLanguage":"AndroidThunkJava_ShowMobileFiles",0,0,0);
+    if (request>=1 && request<=3) mobile_android_call_thunk(request==3 ? "AndroidThunkJava_OpenTouchLayout":request==2 ? "AndroidThunkJava_ShowMobileLanguage":"AndroidThunkJava_ShowMobileFiles",0,0,0);
 }
 
 static int mobile_android_keep_startup_language(unsigned long base) {

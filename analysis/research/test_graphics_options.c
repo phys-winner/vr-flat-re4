@@ -41,6 +41,8 @@ static int fixture_unlink(const char* path){(void)path;char temp[2056];snprintf(
 #define unlink fixture_unlink
 #define LOGF(...) ((void)0)
 static int touch_mobile_settings_apply(int a,int b,int c,int d,int e){(void)a;(void)b;(void)c;(void)d;(void)e;settings_published++;return 1;}
+static int display_reported;
+static void touch_mobile_settings_display(int milli_hz){assert(milli_hz>=24000&&milli_hz<=240000);display_reported=milli_hz;}
 static const char* fixture_language="en";
 static const char* mobile_android_language(void){return fixture_language;}
 static volatile int g_touch_density_milli=2750;
@@ -71,6 +73,8 @@ static void (*qs_set)(const void*);
 static void (*qs_destroy)(void*);
 static void files(void){file_requests++;}
 static void language(void){language_requests++;}
+static int layout_requests;
+static void mobile_android_request_layout(void){layout_requests++;}
 static int refresh_readback,displayed_extras[5];
 static void fixture_refresh_display(void*);
 static void refresh(void* component,uint64_t menu){assert(component&&menu);refreshes++;if(refresh_readback)fixture_refresh_display(component);}
@@ -102,7 +106,7 @@ static struct touch_mobile_extras touch_mobile_extras_snapshot(void){return (str
 static void gate_menu_add_entries(void*,void*);
 static void gate_menu_add_entry(void*,uint64_t,const void*);
 static void capture_placement(const char*,int,uint64_t,uint64_t);
-struct row_capture {int widget,count;uint64_t owning,link,prop;float lo,hi,snap;const char* label;const char* values[7];const char* help;};
+struct row_capture {int widget,count;uint64_t owning,link,prop;float lo,hi,snap;const char* label;const char* values[12];const char* help;};
 static struct row_capture rows[128];static int row_count;
 static void mm_row(void* component,const char* row,int widget,uint64_t owning,uint64_t link,uint64_t prop,
     float lo,float hi,float snap,uint64_t get,uint64_t apply,uint64_t display,const char* label,const char* help,
@@ -111,7 +115,7 @@ static void mm_row(void* component,const char* row,int widget,uint64_t owning,ui
     assert(component&&label&&help&&row_count<128);
     rows[row_count]=(struct row_capture){widget,count,owning,link,prop,lo,hi,snap,label};
     rows[row_count].help=help;
-    for(int i=0;i<count;i++){assert(i<7);rows[row_count].values[i]=toggles[i];}
+    for(int i=0;i<count;i++){assert(i<12);rows[row_count].values[i]=toggles[i];}
     ++row_count;
     capture_placement(row,widget,owning,prop);
     for(int i=0;i<count;i++)assert(toggles[i]&&*toggles[i]);
@@ -171,7 +175,7 @@ static void menu_placement_case(void* component,void* table,int owner,int extras
         if(native_rows[i].prop==mn.p_fov){assert(native_rows[i].menu==mn.graphics);fov_count++;}
     }
     assert(audio_count==6+(owner&&table==(void*)1));
-    assert(graphics_count==((owner&&table==(void*)1)?MG_COUNT+2:0));
+    assert(graphics_count==((owner&&table==(void*)1)?MG_COUNT+3:0));
     assert(fov_count==(owner&&table==(void*)1));
     if(owner&&table==(void*)1)assert(native_rows[0].prop==mn.p_graphics_open);
 }
@@ -213,6 +217,12 @@ static void replay_actions(void* self){
 }
 int main(int argc,char** argv){
     assert(argc==2);snprintf(prefs_file,sizeof prefs_file,"%s",argv[1]);
+    mobile_prefs_load();assert(mobile_prefs_aim_toggle()==1);
+    for(int mode=0;mode<=1;mode++){
+        g_mprefs.aim_toggle=mode;mobile_prefs_save();
+        g_mprefs.aim_toggle=1-mode;mobile_prefs_load();assert(mobile_prefs_aim_toggle()==mode);
+    }
+    remove(prefs_file);mobile_prefs_load();assert(mobile_prefs_aim_toggle()==1);
     assert(sizeof(uintptr_t)==8&&offsetof(struct fake_var,flags)==0x18);
     unsigned char* image=calloc(1,0xb000000);assert(image);
     for(unsigned i=0;i<fixture_guard_count;i++){
@@ -242,6 +252,7 @@ int main(int argc,char** argv){
     mn.p_files=106;mn.p_sens=107;mn.p_aim=108;mn.p_fov=109;mn.p_weapon_fov=110;
     mn.p_aim_walk=111;mn.p_intro_skip=112;mn.p_start_confirm=113;mn.p_hide_pad=114;mn.p_tutorial=115;
     mn.p_aggression=116;mn.language=117;mn.p_language=118;
+    mn.p_layout=140;mn.p_scale=141;mn.p_fps=142;
     mn.f_language_get=130;mn.f_language_apply=131;mn.f_get=132;mn.f_apply=133;
     for(int i=0;i<5;i++)mn.p_x[i]=120+i;for(int i=0;i<MG_COUNT;i++)mn.p_graphics[i]=200+i;
     unsigned char activity[0x300]={0},component[0x200]={0},desc[256];*(void**)(activity+0x258)=component;
@@ -253,15 +264,16 @@ int main(int argc,char** argv){
     descriptor(desc,mn.p_graphics_open);fixture_now=100;hook_opt_apply(activity,desc,1);touch_mobile_menu_tick();assert(!menu_changes);
     fixture_now=151;touch_mobile_menu_tick();assert(menu_changes==1&&last_menu==mn.graphics);
     descriptor(desc,mn.p_extras_open);fixture_now=200;hook_opt_apply(activity,desc,1);fixture_now=251;touch_mobile_menu_tick();assert(menu_changes==2&&last_menu==mn.extras);
-    row_count=0;mm_inject_graphics_open(component);mm_inject_graphics(component);assert(row_count==MG_COUNT+4);
+    row_count=0;mm_inject_graphics_open(component);mm_inject_graphics(component);assert(row_count==MG_COUNT+5);
     assert(rows[0].owning==mn.audio&&rows[0].prop==mn.p_graphics_open&&rows[0].widget==3);
     assert(rows[1].widget==0&&rows[1].link==mn.audio);
-    assert(rows[2].owning==mn.graphics&&rows[2].prop==mn.p_fov&&rows[2].widget==4&&rows[2].lo==70&&rows[2].hi==110&&rows[2].snap==5);
-    assert(rows[3].owning==mn.graphics&&rows[3].prop==mn.p_weapon_fov&&rows[3].widget==4&&rows[3].lo==60&&rows[3].hi==110);
-    for(int i=0;i<MG_COUNT;i++)assert(rows[i+4].owning==mn.graphics&&rows[i+4].prop==mn.p_graphics[i]&&rows[i+4].count==mobile_graphics_choice_count(i));
-    variables[MG_MIPBIAS].flags=4;row_count=0;mm_inject_graphics_open(component);mm_inject_graphics(component);assert(row_count==MG_COUNT+3);variables[MG_MIPBIAS].flags=0x60;
+    assert(rows[2].owning==mn.graphics&&rows[2].prop==mn.p_scale&&rows[2].count==5);
+    assert(rows[3].owning==mn.graphics&&rows[3].prop==mn.p_fov&&rows[3].widget==4&&rows[3].lo==70&&rows[3].hi==110&&rows[3].snap==5);
+    assert(rows[4].owning==mn.graphics&&rows[4].prop==mn.p_weapon_fov&&rows[4].widget==4&&rows[4].lo==60&&rows[4].hi==110);
+    for(int i=0;i<MG_COUNT;i++)assert(rows[i+5].owning==mn.graphics&&rows[i+5].prop==mn.p_graphics[i]&&rows[i+5].count==mobile_graphics_choice_count(i));
+    variables[MG_MIPBIAS].flags=4;row_count=0;mm_inject_graphics_open(component);mm_inject_graphics(component);assert(row_count==MG_COUNT+4);variables[MG_MIPBIAS].flags=0x60;
     for(int i=0;i<MG_COUNT;i++)variables[i].flags=4;
-    row_count=0;mm_inject_graphics_open(component);mm_inject_graphics(component);assert(row_count==4&&rows[2].prop==mn.p_fov&&rows[3].prop==mn.p_weapon_fov);
+    row_count=0;mm_inject_graphics_open(component);mm_inject_graphics(component);assert(row_count==5&&rows[3].prop==mn.p_fov&&rows[4].prop==mn.p_weapon_fov);
     for(int i=0;i<MG_COUNT;i++)variables[i].flags=0x60;
     menu_placement_case(component,(void*)1,1,1);menu_placement_case(component,(void*)1,1,0);
     menu_placement_case(component,(void*)2,1,1);menu_placement_case(component,(void*)1,0,1);
@@ -315,7 +327,7 @@ int main(int argc,char** argv){
     assert(g_mprefs.graphics[MG_MIPBIAS]==0&&g_mprefs.graphics[MG_ANISO]==5);
     native_reset_replay=replay_actions;
     g_mprefs.graphics[MG_MIPBIAS]=1;hook_opt_reset(activity,mn.comfort);
-    assert(g_mprefs.sens==100&&g_mprefs.fov==105&&g_mprefs.graphics[MG_ANISO]==5&&g_mprefs.graphics[MG_MIPBIAS]==1&&original_resets==1);
+    assert(g_mprefs.sens==100&&mobile_prefs_aim_toggle()==1&&g_mprefs.fov==105&&g_mprefs.graphics[MG_ANISO]==5&&g_mprefs.graphics[MG_MIPBIAS]==1&&original_resets==1);
     assert(!file_requests&&!language_requests&&!mm_pending_menu_component&&!mm_reset_replay);
     assert(!confirm_requests&&!unlock_calls);
     g_mprefs.sens=150;hook_opt_reset(activity,mn.graphics);assert(g_mprefs.sens==150&&g_mprefs.fov==90&&original_resets==1&&refreshes==1);
@@ -325,7 +337,7 @@ int main(int argc,char** argv){
     descriptor(desc,mn.p_files);hook_opt_apply(activity,desc,1);assert(file_requests==1);
     descriptor(desc,mn.p_graphics_open);hook_opt_apply(activity,desc,1);assert(mm_pending_menu_component==component);
     mm_pending_menu_component=0;native_reset_replay=0;
-    assert(!mobile_prefs_default.aim_toggle&&!mobile_prefs_default.qturn&&mobile_prefs_default.aim_walk);
+    assert(mobile_prefs_default.aim_toggle==1&&!mobile_prefs_default.qturn&&mobile_prefs_default.aim_walk);
     assert(!mobile_prefs_default.intro_skip&&!mobile_prefs_default.start_confirm&&!mobile_prefs_default.hide_gamepad_hints);
     assert(mobile_prefs_default.weapon_fov==90);
     assert(mobile_prefs_default.gyro==1&&!mobile_prefs_default.aggression);
@@ -389,5 +401,41 @@ int main(int argc,char** argv){
     configure(image);variables[MG_STATICLOD].vtable=0;variables[MG_SHADOWRES].value=0;apply_touch_graphics((uintptr_t)image);
     assert(!mobile_graphics_available(MG_STATICLOD)&&!mobile_graphics_available(MG_SHADOWRES));
     int before=native_sets;apply_touch_graphics((uintptr_t)image);assert(native_sets==before);
+    Java_com_epicgames_ue4_MobileSettings_nativeDisplayModes(0,0,60|((uint64_t)120<<8));
+    Java_com_epicgames_ue4_MobileSettings_nativeDisplay(0,0,0);
+    Java_com_epicgames_ue4_MobileSettings_nativeDisplay(0,0,240001);
+    assert(!display_reported);
+    Java_com_epicgames_ue4_MobileSettings_nativeDisplay(0,0,59940);
+    assert(display_reported==59940&&g_display_milli_hz==59940);
+    int rates[8];assert(mobile_fps_modes(rates)==1&&rates[0]==120000);
+    g_mprefs=mobile_prefs_default;descriptor(desc,mn.p_fps);hook_opt_apply(activity,desc,4);
+    assert(g_mprefs.fps_milli==120000&&hook_opt_get(activity,desc)==4&&Java_com_epicgames_ue4_MobileSettings_nativeFrameLimit(0,0)==120000);
+    g_mprefs=mobile_prefs_default;mobile_prefs_load();assert(g_mprefs.fps_milli==120000&&mobile_fps_index()==4);
+    Java_com_epicgames_ue4_MobileSettings_nativeDisplayModes(0,0,60);
+    assert(mobile_fps_index()==2&&Java_com_epicgames_ue4_MobileSettings_nativeFrameLimit(0,0)==60000);
+    uint64_t mode_pack=60|((uint64_t)90<<8)|((uint64_t)120<<16)|((uint64_t)144<<24);
+    Java_com_epicgames_ue4_MobileSettings_nativeDisplayModes(0,0,(int64_t)mode_pack);
+    assert(mobile_fps_modes(rates)==3&&rates[0]==90000&&rates[2]==144000);
+    Java_com_epicgames_ue4_MobileSettings_nativeDisplayModes(0,0,120|((uint64_t)60<<8));
+    assert(g_display_modes==mode_pack);
+    Java_com_epicgames_ue4_MobileSettings_nativeDisplayModes(0,0,60|((uint64_t)120<<16));assert(g_display_modes==mode_pack);
+    Java_com_epicgames_ue4_MobileSettings_nativeDisplayModes(0,0,241);assert(g_display_modes==mode_pack);
+    Java_com_epicgames_ue4_MobileSettings_nativeDisplayModes(0,0,0);assert(g_display_modes==mode_pack);
+    for(int i=0;i<7;i++) {
+        hook_opt_apply(activity,desc,i);assert(hook_opt_get(activity,desc)==i);
+        int expected[]={30000,45000,60000,144000,90000,120000,144000};
+        assert(Java_com_epicgames_ue4_MobileSettings_nativeFrameLimit(0,0)==expected[i]);
+    }
+    hook_opt_apply(activity,desc,7);assert(hook_opt_get(activity,desc)==6);
+    descriptor(desc,mn.p_scale);
+    for(int i=0;i<5;i++){hook_opt_apply(activity,desc,i);assert(g_mprefs.render_scale==mobile_render_scales[i]&&hook_opt_get(activity,desc)==i);}
+    hook_opt_apply(activity,desc,-1);hook_opt_apply(activity,desc,5);assert(g_mprefs.render_scale==100);
+    hook_opt_apply(activity,desc,1);g_mprefs=mobile_prefs_default;mobile_prefs_load();assert(g_mprefs.render_scale==67);
+    assert(Java_com_epicgames_ue4_MobileSettings_nativeRenderPercent(0,0)==67);
+    hook_opt_apply(activity,desc,0);assert(g_mprefs.render_scale==50&&Java_com_epicgames_ue4_MobileSettings_nativeRenderPercent(0,0)==67);
+    g_mprefs.render_scale=999;g_mprefs.fps_milli=-1;mobile_prefs_sanitize(&g_mprefs);assert(g_mprefs.render_scale==100&&!g_mprefs.fps_milli);
+    descriptor(desc,mn.p_layout);mm_reset_replay=1;hook_opt_apply(activity,desc,1);mm_reset_replay=0;assert(!layout_requests);
+    hook_opt_apply(activity,desc,1);assert(layout_requests==1);
+    puts("PASS: actual device refresh modes, rejected malformed mode snapshots, live FPS choices/readback, preferences migration/unsupported-device fallback, render-scale validation/persistence/startup latch, layout action and reset guard");
     free(image);puts("PASS: guarded graphics/menu adapter; original Audio placement and scoped reset; live Extras values and one material-change refresh only on same weak-owned visible list; pending/retry/cancel/stale/thread/ownership guards with no actions on refresh");return 0;
 }

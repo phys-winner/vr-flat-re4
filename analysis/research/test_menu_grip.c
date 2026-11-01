@@ -94,6 +94,54 @@ static void fallback(void) {
     send_touch(2,1,930,520); fill_controller_state(state,3); assert(((float*)state)[5]==0);
     verify_preserved();
 }
+static void pending_hover(void) {
+    touch_menu_grip_tick(m.hand);
+    assert(!presses && !releases && !mg_owned.hand && !g_menu_pointer.pressed
+        && g_menu_pointer.action==MP_PENDING);
+    neutral_rt(); verify_preserved();
+}
+static void test_deferred_hover(void) {
+    const unsigned types[]={2,4,7,8};
+    for(unsigned i=0;i<sizeof types/sizeof *types;i++) {
+        ready(); native_type=g_touch_context=types[i]; hover_success=0; down(); due();
+        unsigned serial=g_menu_pointer.serial;
+        for(unsigned tick=0;tick<12;tick++)pending_hover();
+        send_touch(1,1,930,520); pending_hover();
+        hover_success=1; touch_menu_grip_tick(m.hand);
+        assert(presses==1 && !releases && mg_owned.serial==serial && g_menu_pointer.action==MP_GRIP);
+        neutral_rt(); touch_menu_grip_tick(m.hand); assert(presses==1);
+        send_touch(1,1,1280,740); touch_menu_grip_tick(m.hand); assert(presses==1 && !releases);
+        send_touch(2,1,1280,740); touch_menu_grip_tick(m.hand);
+        assert(releases==1 && !mg_owned.hand); neutral_rt(); verify_preserved();
+    }
+    // A known ordinary button still chooses Trigger; an absent cached hover does not.
+    ready(); hover_success=0; down(); due(); pending_hover();
+    hover_success=1; m.button[0x320]=0; touch_menu_grip_tick(m.hand);
+    assert(!presses && g_menu_pointer.action==MP_TRIGGER);
+    unsigned char state[96]; fill_controller_state(state,3); assert(((float*)state)[5]==1);
+    send_touch(2,1,930,520); fill_controller_state(state,3); assert(((float*)state)[5]==0);
+    verify_preserved();
+
+    // Cancel/reset and an ended drag cannot later acquire a newly visible receiver.
+    for(unsigned cancel=0;cancel<3;cancel++) {
+        ready(); hover_success=0; down(); due(); pending_hover();
+        if(cancel==0)touch_reset();
+        if(cancel==1)touch_menu_grip_cancel(m.hand);
+        if(cancel==2)send_touch(2,1,1280,740);
+        hover_success=1; touch_menu_grip_tick(m.hand);
+        assert(!presses && !releases && !mg_owned.hand && !g_menu_pointer.serial);
+        if(cancel==0) {
+            fill_controller_state(state,3);
+            assert(((float*)state)[5]==0 && m.game_hand[0x33d]==1 && g_touch_weapon==0);
+        } else { neutral_rt(); verify_preserved(); }
+    }
+    ready(); hover_success=0; down(); send_touch(2,1,930,520);
+    g_menu_pointer.press_ms=g_tap_press_ms=now_ms()-1;
+    g_menu_pointer.release_ms=g_tap_until_ms=now_ms()+60000; pending_hover();
+    g_menu_pointer.release_ms=g_tap_until_ms=now_ms()-1;
+    hover_success=1; touch_menu_grip_tick(m.hand);
+    assert(!presses && !releases && !mg_owned.hand); neutral_rt(); verify_preserved();
+}
 static void rejected_hand(void* hand) { down(); due(); touch_menu_grip_tick(hand); assert(!presses && !hovers && !releases); verify_preserved(); }
 #ifdef MENU_GRIP_NATIVE_FIXTURE
 #include MENU_GRIP_NATIVE_FIXTURE
@@ -104,6 +152,7 @@ int main(int argc,char** argv) {
 #ifdef MENU_GRIP_NATIVE_FIXTURE
     verify_native_installer();
 #endif
+    test_deferred_hover();
     ready(); held(); neutral_rt(); send_touch(1,1,1280,740); touch_menu_grip_tick(m.hand);
     assert(presses==1 && !releases && g_ptr_u==1280/g_tw); neutral_rt();
     send_touch(2,1,1280,740); touch_menu_grip_tick(m.hand); assert(releases==1 && !m.hand[0x33d]);
@@ -120,12 +169,14 @@ int main(int argc,char** argv) {
     assert(delay==120 && g_menu_pointer.release_ms-g_menu_pointer.press_ms==150);
     g_menu_pointer.press_ms=g_tap_press_ms=now_ms()-1;
     g_menu_pointer.release_ms=g_tap_until_ms=now_ms()+60000;
-    neutral_rt(); touch_menu_grip_tick(m.hand); assert(!presses && g_menu_pointer.action==MP_TRIGGER);
+    pending_hover();
+    hover_success=1; m.button[0x320]=0;
+    touch_menu_grip_tick(m.hand); assert(!presses && g_menu_pointer.action==MP_TRIGGER);
     unsigned char tap_state[96]; fill_controller_state(tap_state,3); assert(((float*)tap_state)[5]==1);
     g_menu_pointer.release_ms=g_tap_until_ms=now_ms()-1; fill_controller_state(tap_state,3);
     assert(((float*)tap_state)[5]==0 && !presses && !releases); verify_preserved();
 
-    ready(); hover_success=0; fallback(); ready(); receiver_enabled=0; fallback();
+    ready(); receiver_enabled=0; fallback();
     ready(); m.button[0x320]=0; fallback(); ready(); *(void**)(m.button+0xa0)=m.other; fallback();
     ready(); *(void**)(m.button+0x308)=m.other; fallback();
     ready(); *(int*)(m.button_class+0x58)=0x32f; fallback();
@@ -179,6 +230,21 @@ int main(int argc,char** argv) {
     ready(); held(); mg_owned.hand=(void*)1; touch_menu_grip_tick(m.hand); assert(!releases && !mg_owned.hand); verify_preserved();
     ready(); native_type=g_touch_context=4; held(); send_touch(2,1,1280,740); touch_menu_grip_tick(m.hand); assert(releases==1);
     ready(); native_type=g_touch_context=7; held(); send_touch(2,1,1280,740); touch_menu_grip_tick(m.hand); assert(releases==1);
-    puts("PASS: actual input/menuGrip/Back C; native callbacks outside mutex, single Grip without RT, hold/MOVE/UP, fast tap, generic fallback, typed/owner/thread guards, release before native Back/modal refusal, focus/context/reentry/fullName/stale-pointer cancellation, preserved gameplay RG/weapon/grip and no repeat");
+    // Merchant treasures use the same authored Grip button as the pause inventory.
+    ready(); native_type=g_touch_context=8; held(); neutral_rt();
+    send_touch(1,1,1280,740); touch_menu_grip_tick(m.hand); assert(presses==1 && !releases);
+    send_touch(2,1,1280,740); touch_menu_grip_tick(m.hand); assert(releases==1 && !mg_owned.hand);
+    touch_menu_grip_tick(m.hand); assert(releases==1); verify_preserved();
+    ready(); native_type=g_touch_context=8; receiver_enabled=0; fallback();
+    ready(); native_type=g_touch_context=8; m.button[0x320]=0; fallback();
+    ready(); native_type=g_touch_context=8; *(void**)(m.button+0x308)=m.other; fallback();
+    ready(); native_type=g_touch_context=8; held(); touch_reset(); touch_menu_grip_tick(m.hand);
+    assert(releases==1 && !m.hand[0x33d] && !mg_owned.hand && m.game_hand[0x33d]==1);
+    ready(); native_type=g_touch_context=8; rejected_hand(m.left);
+    ready(); native_type=g_touch_context=8; rejected_hand(m.inactive);
+    for(unsigned type=0;type<=10;type++)if(type!=2 && type!=4 && type!=7 && type!=8){
+        ready(); native_type=g_touch_context=type; rejected_hand(m.hand);
+    }
+    puts("PASS: actual input/menuGrip/Back C; absent native hover stays pending across ticks then same-gesture Grip in2/4/7/8 or known-button Trigger; canceled/ended/expired gestures never acquire; native callbacks outside mutex, single Grip without RT, hold/MOVE/UP, fast tap, generic fallback, typed/owner/thread guards, release before native Back/modal refusal, focus/context/reentry/fullName/stale-pointer cancellation, preserved gameplay RG/weapon/grip and no repeat");
     return 0;
 }

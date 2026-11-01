@@ -5,8 +5,10 @@ import hashlib,json,re,struct,subprocess,tempfile
 from inspect_flat_bp import read_script,DIRECTORY
 import inspect_flat_bp as bp
 from inspect_ui_package import package
+from check_curved_menu_bounds import original_curved_vertices,capture_header
 root=Path(__file__).resolve().parents[2]
 native=(root/'apk_decoded/lib/arm64-v8a/libUE4.so').read_bytes()
+curve_capture=capture_header(original_curved_vertices(native))
 assert struct.unpack_from('<4I',native,0x6371bcc)==(0xd101c3ff,0xa90457f6,0xa9054ff4,0xa9067bfd)
 for address,word in ((0x6371c54,0xf94006a8),(0x6371c64,0xf90003f3),(0x6371c68,0xad408281),
                      (0x6371c6c,0x3dc00282),(0x6371c84,0x97c5d9cb),(0x698e348,0xb9406a88),(0x698e450,0xf9403289)):
@@ -110,6 +112,35 @@ root_source=(root/'analysis/re4fix.c').read_text()
 match=re.search(r'^static void head_angles_now\(float\* yaw, float\* pitch\) \{',root_source,re.M);assert match
 end=root_source.index('\n}',match.end())+2
 head_source=root_source[match.start():end]
+# Preserve the exact live Merc scene topology, including both decorative capture/lighting actors.
+graph_path=Path(os.environ['RE4_QA_CAPTURE_DIR'])/'p431_merc_live_graph.json'
+assert hashlib.sha256(graph_path.read_bytes()).hexdigest()=='f667dc327d1a836a9f5aed142ec5cbe26b25e2f6ae439f2b0432169068468ac4'
+graph=json.loads(graph_path.read_text());nodes=graph['nodes'];assert graph['read_only'] and graph['node_count']==len(nodes)==304
+assert len({n['object'] for n in nodes})==304 and sum(len(n['children']) for n in nodes)==303
+owners={'0x72349ce020':8,'0x72569e4a00':13,'0x72569e9000':16,'0x7258e83620':26,'0x72578840c0':27}
+assert {o:sum(n['owner']==o for n in nodes) for o in owners}==dict(zip(owners,[32,4,4,132,132]))
+indices=dict(zip(('0x721e377600','0x721cb99b10','0x723b94b400','0x7257a86dc0','0x72a47c7e00','0x72569eac00','0x721cb9e570',
+    '0x7257a87b40','0x721e370a00','0x72569ecf00','0x721cb9dad0','0x72569e2000'),(9,10,20,23,14,15,21,25,17,18,24,6)))
+next_index=30
+for node in nodes:
+    if node['object'] not in indices:indices[node['object']]=next_index;next_index+=1
+edges=[];merc_rows=[]
+for node in nodes:
+    kind=1|({'0x72c6ce1a00':2,'0x72c6cfe700':4,'0x72c6cfdf80':8}.get(node['class'],0))
+    first=len(edges);edges.extend(indices[c] for c in node['children'])
+    assert node['class_size']>=0x1f0 and len(node['tf'])==12
+    floats=','.join(format(x,'.9e')+'f' for x in node['tf'])
+    outer=owners.get(node['outer'],indices.get(node['outer']));assert outer is not None
+    merc_rows.append('{'+','.join(map(str,(indices[node['object']],owners[node['owner']],outer,indices.get(node['parent'],0),first,len(node['children']),node['flags14c'],kind)))+',{'+floats+'}}')
+merc_capture='static const unsigned merc_edges[]={'+','.join(map(str,edges))+'};\n'
+merc_capture+='static const struct{unsigned index,owner,outer,parent,first,count,flags,kind;float tf[12];}merc_nodes[]={\n'+',\n'.join(merc_rows)+'\n};\n'
+merc_capture+='static const struct{unsigned actor,root;}merc_owners[]={'+','.join('{'+str(owners[o])+','+str(indices[next(n['object'] for n in nodes if n['owner']==o and (n['parent']=='0x0' or next(p['owner'] for p in nodes if p['object']==n['parent'])!=o))])+'}' for o in owners)+'};\n'
+controls=('0x72569eac00','0x72569ecf00','0x72569e6600','0x72569e2000','0x72569e2380','0x72569e9700','0x736935c940')
+merc_capture+='static const unsigned merc_controls[]={'+','.join(str(indices[c]) for c in controls)+'};\n'
+raw=bytes.fromhex(next(n['widget_438_520'] for n in nodes if n['object']=='0x721cb99b10'))
+assert struct.unpack_from('<2i',raw,0)==struct.unpack_from('<2i',raw,0x18)==(1920,1080) and raw[0x20]==0
+merc_capture+='static const unsigned char merc_main_widget[]={'+','.join(map(str,raw))+'};\n'
+print('PASS: immutable live Merc304-node/303-edge topology, exact32+4+4+132+132 ownership, original native widget bytes and registered-control order captured for actual C regression',flush=True)
 print('PASS:12 immutable original DeathMenu/button/widget/surface members; native BP spawns2 independent ParentMenu-owned buttons without attachments and original cinematic screen bounds source; real current head_angles_now is compiled into camera regression',flush=True)
 clang=Path(os.path.join(os.environ['ANDROID_SDK_ROOT'], 'ndk/27.2.12479018/toolchains/llvm/prebuilt/windows-x86_64/bin/clang.exe'))
 vc=Path(r'C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231')
@@ -119,11 +150,18 @@ for fixture in ('test_ui_actions_start.c','test_ui_console.c'):
   with tempfile.TemporaryDirectory(prefix='re4-actions-start-') as td:
     folder=Path(td);obj=folder/'test.obj';exe=folder/'test.exe'
     head_header=folder/'head.h';head_header.write_text(head_source)
-    includes=['-DUI_HEAD_FRAGMENT="'+head_header.as_posix()+'"']
+    curve_header=folder/'curves.h';curve_header.write_text(curve_capture)
+    merc_header=folder/'merc.h';merc_header.write_text(merc_capture)
+    widget_header=folder/'widget.h'
+    flat=(root/'analysis/re4fix_flat_view.h').read_text()
+    assert '{0x9f77670, 0x51c}' in flat
+    widget_header.write_text(flat[flat.index('static int fv_descends_from('):flat.index('static unsigned fv_screen_planes(')]
+        +flat[flat.index('static struct cinema_ui_vec2 (*fv_current_draw_size)'):flat.index('#include "re4fix_ui_footer.h"')])
+    includes=['-DUI_HEAD_FRAGMENT="'+head_header.as_posix()+'"','-DUI_WIDGET_FRAGMENT="'+widget_header.as_posix()+'"','-DUI_CURVE_CAPTURE="'+curve_header.as_posix()+'"','-DUI_MERC_CAPTURE="'+merc_header.as_posix()+'"']
     subprocess.run([str(clang),'--target=aarch64-linux-android23','-O2','-Werror',*includes,'-fsyntax-only',str(source)],check=True)
     subprocess.run([str(clang),'--target=x86_64-pc-windows-msvc','-O2','-Werror',
         *includes,'-isystem',str(vc/'include'),'-isystem',str(sdk/'Include/10.0.26100.0/ucrt'),'-c','-o',str(obj),str(source)],check=True)
-    subprocess.run([str(vc/'bin/Hostx64/x64/link.exe'),'/NOLOGO',f'/OUT:{exe}',str(obj),'libcmt.lib','libucrt.lib',
+    subprocess.run([str(vc/'bin/Hostx64/x64/link.exe'),'/NOLOGO','/STACK:4194304',f'/OUT:{exe}',str(obj),'libcmt.lib','libucrt.lib',
         'libvcruntime.lib','oldnames.lib','kernel32.lib',f'/LIBPATH:{vc/"lib/x64"}',
         f'/LIBPATH:{sdk/"Lib/10.0.26100.0/ucrt/x64"}',f'/LIBPATH:{sdk/"Lib/10.0.26100.0/um/x64"}'],check=True)
     subprocess.run([str(exe)],check=True)

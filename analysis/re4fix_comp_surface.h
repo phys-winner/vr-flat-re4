@@ -95,7 +95,6 @@ int h_vkCreateAndroidSurface(void* instance,const void* info,const void* allocat
 
 int h_vkSurfaceFormats(void* physical,void* surface,unsigned* count,void* formats) {
     if (!count || physical!=g_phys_dev || !physical || !surface
-        || !__atomic_load_n(&g_comp_format_list,__ATOMIC_ACQUIRE)
         || surface!=__atomic_load_n(&g_comp_surface,__ATOMIC_ACQUIRE) || g_comp_disable)
         return r_vkSurfaceFormats(physical,surface,count,formats);
     VkSurfaceFormatKHR real[64];unsigned size=64;

@@ -11,25 +11,34 @@ static unsigned g_comp_image_flags_patches,g_comp_image_flags_msaa_patches,g_com
 static const VkImageCreateInfo* comp_image_flags_info(VkDevice device,const VkImageCreateInfo* ci,VkImageCreateInfo* copy,
     VkImageFormatListCreateInfo* added,const VkFormat formats[2],uintptr_t caller) {
     if(!ci||!copy||ci->sType!=VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
-        ||(ci->flags&VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT)
         ||!g_ue4_base_cached||caller!=g_ue4_base_cached+0x6545984ul)return ci;
-    if(ci->pNext) {
-        const VkImageFormatListCreateInfo* list=ci->pNext;
-        // The native generator can supply a two-format head without its required flag; keep that borrowed chain intact.
-        if(list->sType!=VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO||list->viewFormatCount!=2||!list->pViewFormats)return ci;
-    } else {
-        if(!added||!formats||!g_comp_on||g_comp_disable||!g_comp_mutable||device!=(VkDevice)g_comp_dev
-            ||ci->format!=VK_FORMAT_B8G8R8A8_SRGB||(ci->samples!=VK_SAMPLE_COUNT_2_BIT&&ci->samples!=VK_SAMPLE_COUNT_4_BIT)
-            ||ci->imageType!=VK_IMAGE_TYPE_2D||!g_comp_w||!g_comp_h
-            ||ci->extent.width!=g_comp_w||ci->extent.height!=g_comp_h||ci->extent.depth!=1
-            ||ci->mipLevels!=1||ci->arrayLayers!=1||ci->tiling!=VK_IMAGE_TILING_OPTIMAL
-            ||!(ci->usage&VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)||ci->initialLayout!=VK_IMAGE_LAYOUT_UNDEFINED
-            ||ci->sharingMode!=VK_SHARING_MODE_EXCLUSIVE||ci->queueFamilyIndexCount||ci->pQueueFamilyIndices)return ci;
-        *added=(VkImageFormatListCreateInfo){VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO};
-        added->viewFormatCount=2;added->pViewFormats=formats;
+    const VkImageFormatListCreateInfo* list=ci->pNext;
+    int head=list&&list->sType==VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO;
+    int viewport=g_comp_on&&!g_comp_disable&&g_comp_mutable&&device==(VkDevice)g_comp_dev
+        &&ci->format==VK_FORMAT_B8G8R8A8_SRGB&&(ci->samples==VK_SAMPLE_COUNT_2_BIT||ci->samples==VK_SAMPLE_COUNT_4_BIT)
+        &&ci->imageType==VK_IMAGE_TYPE_2D&&g_comp_w&&g_comp_h
+        &&ci->extent.width==g_comp_w&&ci->extent.height==g_comp_h&&ci->extent.depth==1
+        &&ci->mipLevels==1&&ci->arrayLayers==1&&ci->tiling==VK_IMAGE_TILING_OPTIMAL
+        &&(ci->usage&VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)&&ci->initialLayout==VK_IMAGE_LAYOUT_UNDEFINED
+        &&ci->sharingMode==VK_SHARING_MODE_EXCLUSIVE&&!ci->queueFamilyIndexCount&&!ci->pQueueFamilyIndices;
+    if(viewport) {
+        if((!added||!formats)&&(list||__atomic_load_n(&g_comp_format_list,__ATOMIC_ACQUIRE)))return ci;
+        int known=head&&(!list->viewFormatCount||(list->viewFormatCount==2&&list->pViewFormats
+            &&((list->pViewFormats[0]==formats[0]&&list->pViewFormats[1]==formats[1])
+                ||(list->pViewFormats[0]==formats[1]&&list->pViewFormats[1]==formats[0]))));
+        if(!list||known) {
+            if((ci->flags&VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT)&&(!list||!list->viewFormatCount))return ci;
+            *copy=*ci;copy->flags|=VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+            if(list&&list->viewFormatCount) {
+                // Keep the borrowed chain immutable; zero count requests the core unrestricted mutable contract.
+                *added=*list;added->viewFormatCount=0;added->pViewFormats=0;copy->pNext=added;
+            }
+            return copy;
+        }
     }
+    // Preserve the existing validity repair for all other native two-format lists.
+    if((ci->flags&VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT)||!head||list->viewFormatCount!=2||!list->pViewFormats)return ci;
     *copy=*ci;copy->flags|=VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
-    if(!ci->pNext)copy->pNext=added;
     return copy;
 }
 
@@ -50,9 +59,12 @@ static VKAPI_ATTR __attribute__((noinline)) VkResult VKAPI_CALL h_comp_image_fla
             log|=__atomic_fetch_add(&g_comp_image_flags_msaa2_patches,1,__ATOMIC_RELAXED)<4;
         if(log) {
             const VkImageFormatListCreateInfo* list=selected->pNext;
-            LOGF("COMP image flags native mutable repair format=%u->%u samples=%u %ux%ux%u originalFlags=%x selectedFlags=%x list=%u [%u,%u] pNext=%p result=%d image=%p",
+            LOGF("COMP image flags native mutable repair format=%u->%u samples=%u %ux%ux%u originalFlags=%x selectedFlags=%x list=%u [%u,%u] originalList=%u format_list_enabled=%d pNext=%p result=%d image=%p",
                 ci->format,copy.format,ci->samples,ci->extent.width,ci->extent.height,ci->extent.depth,ci->flags,copy.flags,
-                list->viewFormatCount,list->pViewFormats[0],list->pViewFormats[1],ci->pNext,result,result==VK_SUCCESS&&output?(void*)*output:0);
+                list?list->viewFormatCount:0,list&&list->viewFormatCount&&list->pViewFormats?list->pViewFormats[0]:0,
+                list&&list->viewFormatCount>1&&list->pViewFormats?list->pViewFormats[1]:0,
+                ci->pNext?((const VkImageFormatListCreateInfo*)ci->pNext)->viewFormatCount:0,
+                __atomic_load_n(&g_comp_format_list,__ATOMIC_ACQUIRE),ci->pNext,result,result==VK_SUCCESS&&output?(void*)*output:0);
         }
     }
     return result;
