@@ -24,7 +24,11 @@ struct cinema_ui_weak{int index,serial;};
 enum{OBJECT_COUNT=350};
 static unsigned char objects[OBJECT_COUNT][0x600];static int alive[OBJECT_COUNT],serials[OBJECT_COUNT],world_calls,restores,refreshes,bounds_ok;
 static int merc_mode;static unsigned merc_kind[OBJECT_COUNT];
+static int merchant_mode,merchant_class_ok,merchant_frame_ok,merchant_inventory_ok;
+static unsigned merchant_getter[2];static uintptr_t g_ue4_base_cached;
 static unsigned g_comp_w=2400,g_comp_h=1080;static float g_fov_h_deg=90;
+static float g_ptr_u,g_ptr_v;
+#include UI_POINTER_FRAGMENT
 static int index_of(const void* p){for(int i=0;i<OBJECT_COUNT;i++)if(p==objects[i])return i;return -1;}
 static int pv_alive(const void* p){int i=index_of(p);return i>=0&&alive[i];}
 static void weak_assign(struct cinema_ui_weak* ref,const void* object){ref->index=index_of(object);ref->serial=ref->index<0?0:serials[ref->index];}
@@ -43,7 +47,7 @@ static void* actor_class(void){return(void*)8;}static void*(*pv_actor_class)(voi
 static void* child_class(void){return(void*)9;}static void*(*pv_child_class)(void)=child_class;
 static unsigned char parent_property[0x60];static int parent_component_class_ok=1;
 static const char* cinema_field_property(const void* object,const char* name,const char* kind){
-    return (object==objects[10]||object==objects[22])&&!strcmp(name,"ParentComponent")&&!strcmp(kind,"WeakObjectProperty")?(const char*)parent_property:0;
+    return (object==objects[10]||object==objects[22]||(merchant_mode&&(object==objects[32]||object==objects[34])))&&!strcmp(name,"ParentComponent")&&!strcmp(kind,"WeakObjectProperty")?(const char*)parent_property:0;
 }
 static const unsigned case_parts[]={15,16,17,18,19,1,2};
 static const char* const case_fields[]={"Background_Plane","Frame_Mesh_Back","Frame_Mesh_Sides",
@@ -61,8 +65,8 @@ static int menu_visual_layout(const void* p,const void* cls,int size){(void)size
     ||(cls==(void*)4&&p==objects[12])||(cls==(void*)5&&p==objects[11])
     ||(cls==(void*)6&&(p==objects[10]||(curved_mode&&p==objects[21])||(case_mode&&(p==objects[24]||p==objects[27]||p==objects[28]))))
     ||(cls==(void*)7&&((p==objects[8]&&(results_mode||case_mode))||(case_mode&&(p==objects[22]||p==objects[25]))))
-    ||(cls==(void*)8&&(p==objects[8]||p==objects[10]||p==objects[13]||p==objects[22]||p==objects[25]))
-    ||(cls==(void*)9&&parent_component_class_ok&&(p==objects[20]||p==objects[21]||p==objects[29])));}
+    ||(cls==(void*)8&&(p==objects[8]||p==objects[10]||p==objects[13]||p==objects[22]||p==objects[25]||(merchant_mode&&(p==objects[30]||p==objects[32]||p==objects[34]))))
+    ||(cls==(void*)9&&parent_component_class_ok&&(p==objects[20]||p==objects[21]||p==objects[29]||(merchant_mode&&(p==objects[36]||p==objects[37])))));}
 static int cinema_object(const void* p,const void* cls,int size){return menu_visual_layout(p,cls,size);}
 static int cinema_ui_named(const void* p,const char* name,int size){
     (void)size;return pv_alive(p)&&((p==objects[0]&&!strcmp(name,"OptionsUIScreen_BP_C"))
@@ -74,6 +78,9 @@ static int cinema_ui_named(const void* p,const char* name,int size){
         ||(p==objects[13]&&case_mode==1&&!strcmp(name,"UI_MercMenu_Content_CreateGame_BP_C"))
         ||(p==objects[13]&&case_mode==2&&!strcmp(name,"UI_PauseMenu_Content_NewGame_BP_C"))
         ||(p==objects[13]&&case_mode==3&&!strcmp(name,"UI_PauseMenu_Content_Options_BP_C"))
+        ||(merchant_mode&&merchant_class_ok&&p==objects[30]&&!strcmp(name,"UI_MerchantScreen_BP_C"))
+        ||(merchant_mode&&merchant_frame_ok&&p==objects[32]&&!strcmp(name,"UI_MerchantScreen_InventoryFrame_BP_C"))
+        ||(merchant_mode&&merchant_inventory_ok&&p==objects[34]&&!strcmp(name,"InventoryUIScreen_BP_C"))
         ||((p==objects[13]||p==objects[16])&&death_button_ok&&!strcmp(name,"Button_Death_C")));
 }
 static void* cinema_ui_property(void* object,const char* cls,const char* field,int offset){
@@ -81,6 +88,10 @@ static void* cinema_ui_property(void* object,const char* cls,const char* field,i
     return death_property_ok&&cinema_ui_named(object,cls,0x498)?*(void**)((char*)object+offset):0;
 }
 static void* fv_object_property(const void* object,const char* name){
+    if(merchant_mode&&object==objects[32]) {
+        if(!strcmp(name,"Ref_InventoryUI"))return *(void* const*)(objects[32]+0x3d0);
+        if(!strcmp(name,"MerchantScreen"))return *(void* const*)(objects[32]+0x268);
+    }
     if(case_mode && object==objects[13])for(unsigned i=0;i<7;i++)if(!strcmp(name,case_fields[i]))return objects[case_parts[i]];
     if(object==objects[8]&&((results_mode==1&&!strcmp(name,"Widget_Results"))
         ||(results_mode==2&&!strcmp(name,"Widget_Unlocks"))))return objects[10];
@@ -167,6 +178,7 @@ static int mock_clock_gettime(int clock_id,struct timespec* ts){(void)clock_id;t
 static struct reload_tf camera={{0,0,0,1},{0,0,160},{1,1,1},{0,0}};
 static void* parts[1];
 static void ready(void){
+    merchant_mode=0;merchant_class_ok=merchant_frame_ok=merchant_inventory_ok=1;g_ue4_base_cached=0;
     merc_mode=0;memset(merc_kind,0,sizeof merc_kind);
     memset(objects,0,sizeof objects);memset(&fv_console,0,sizeof fv_console);
     memset(&fv_camera_menu,0,sizeof fv_camera_menu);memset(fv_case_mesh_bounds,0,sizeof fv_case_mesh_bounds);
@@ -227,6 +239,76 @@ static void test_merchant_fov(void){
     }
     g_comp_w=2400;g_comp_h=1080;
     puts("PASS: actual merchant camera keeps60-degree vertical view across6 display aspects including reported devices; only FOV bytes change;8 inactive/foreign/invalid-size refusals");
+}
+static void merchant_detail_ready(int inventory){
+    ready();merchant_mode=1;current_type=g_touch_context=8;on_game_thread=1;current_ms=1000;g_comp_w=2424;g_comp_h=1080;
+    current_pawn=objects[11];*(void**)(objects[11]+0x2d8)=objects[12];*(void**)(objects[12]+0xa0)=objects[11];
+    current_screen=inventory?objects[34]:objects[30];objects[30][0x314]=4;
+    for(unsigned actor=30;actor<=34;actor+=2){*(void**)(objects[actor]+0x130)=objects[actor+1];*(void**)(objects[actor+1]+0xa0)=objects[actor];}
+    *(void**)(objects[34]+0xe0)=objects[32];*(void**)(objects[32]+0xe0)=objects[30];
+    *(void**)(objects[34]+0x10)=objects[38];*(void**)(objects[32]+0x10)=objects[39];
+    *(void**)(objects[32]+0x268)=objects[30];*(void**)(objects[32]+0x3d0)=objects[34];
+    merchant_getter[0]=0x394c5000;merchant_getter[1]=0xd65f03c0;g_ue4_base_cached=(uintptr_t)merchant_getter-0x63168dc;
+}
+static void merchant_detail_weak(void){
+    for(unsigned child=0;child<2;child++){
+        unsigned actor=child?32:34,parent=child?30:32,component=36+child;
+        *(void**)(objects[actor]+0xe0)=0;struct cinema_ui_weak weak={(int)component,serials[component]};memcpy(objects[actor]+0x160,&weak,sizeof weak);
+        *(void**)(objects[component]+0x1f8)=objects[actor];*(void**)(objects[component]+0xa0)=objects[parent];*(void**)(objects[component]+0x20)=objects[parent];
+        *(void**)(objects[actor+1]+0xc0)=objects[component];*(void**)(objects[component]+0xc0)=objects[parent+1];
+    }
+}
+static void check_merchant_detail(float vertical){
+    static unsigned char unchanged[sizeof objects];memcpy(unchanged,objects,sizeof objects);
+    unsigned char view[0x100],before[sizeof view];
+    for(unsigned frame=0;frame<20;frame++){
+        memset(view,0x5a,sizeof view);float authored=90;memcpy(view+0x18,&authored,4);memcpy(before,view,sizeof view);
+        fv_menu_camera_view(objects[12],view);float actual;memcpy(&actual,view+0x18,4);
+        float actual_vertical=2*atanf(tanf(actual*.00872664626f)*g_comp_h/g_comp_w)*57.2957795f;
+        if(fabsf(actual_vertical-vertical)>=.0001f||actual!=g_fov_h_deg)fprintf(stderr,"merchant detail top=%d state=%u width=%u expected=%.3f actual=%.3f\n",index_of(current_screen),objects[30][0x314],g_comp_w,vertical,actual_vertical);
+        assert(fabsf(actual_vertical-vertical)<.0001f&&actual==g_fov_h_deg);
+        memcpy(view+0x18,before+0x18,4);assert(!memcmp(view,before,sizeof view));
+    }
+    assert(!memcmp(unchanged,objects,sizeof objects));
+    struct reload_tf camera={{0,0,0,1},{0,0,0},{1,1,1},{0,0}};
+    for(unsigned u=0;u<=4;u++)for(unsigned v=0;v<=4;v++){
+        g_ptr_u=(float)u/4;g_ptr_v=(float)v/4;float direction[3],position[3],sx,sy,depth;
+        native_pointer(direction,position);
+        float world[3]={-direction[2]*1000,direction[0]*1000,direction[1]*1000};
+        assert(wt_project(&camera,world,&sx,&sy,&depth));
+        assert(fabsf(sx-g_ptr_u*g_comp_w)<.003f&&fabsf(sy-g_ptr_v*g_comp_h)<.003f&&depth>5);
+        for(unsigned k=0;k<3;k++)assert(fabsf(position[k]+direction[k]*.35f)<.000001f);
+    }
+}
+static void test_merchant_detail(void){
+    const unsigned widths[]={1080,1920,2336,2424,2640,4320};
+    for(unsigned inventory=0;inventory<2;inventory++)for(unsigned state=0;state<18;state++)for(unsigned i=0;i<6;i++){
+        merchant_detail_ready((int)inventory);objects[30][0x314]=(unsigned char)state;g_comp_w=widths[i];
+        check_merchant_detail(i&&(state==4||state==12||state==14)?45:60);
+    }
+    for(unsigned refusal=0;refusal<24;refusal++){
+        merchant_detail_ready(1);
+        if(refusal==0)g_ue4_base_cached=0;if(refusal==1)merchant_getter[0]=0;if(refusal==2)current_screen=0;if(refusal==3)alive[0]=0;
+        if(refusal==4)alive[30]=0;if(refusal==5)merchant_class_ok=0;if(refusal==6)*(void**)(objects[31]+0xa0)=objects[1];
+        if(refusal==7)merchant_inventory_ok=0;if(refusal==8)alive[34]=0;if(refusal==9)merchant_frame_ok=0;
+        if(refusal==10)*(void**)(objects[32]+0x3d0)=objects[1];if(refusal==11)*(void**)(objects[32]+0x268)=0;
+        if(refusal==12)*(void**)(objects[32]+0xe0)=objects[1];if(refusal==13)*(void**)(objects[34]+0xe0)=objects[1];
+        if(refusal==14)*(void**)(objects[35]+0xa0)=objects[1];if(refusal==15)alive[32]=0;if(refusal==16)alive[31]=0;
+        if(refusal==17)fv_peek_screen=0;if(refusal==18)merchant_getter[1]=0;if(refusal==19)*(void**)(objects[30]+0x130)=0;
+        if(refusal==20)*(void**)(objects[32]+0x3d0)=0;if(refusal==21)*(void**)(objects[32]+0x268)=objects[13];
+        if(refusal==22)*(void**)(objects[33]+0xa0)=objects[1];if(refusal==23)objects[30][0x314]=255;
+        check_merchant_detail(60);fv_peek_screen=peek;
+    }
+    merchant_detail_ready(1);merchant_detail_weak();check_merchant_detail(45);
+    for(unsigned refusal=0;refusal<6;refusal++){
+        merchant_detail_ready(1);merchant_detail_weak();
+        if(refusal==0)serials[36]++;if(refusal==1)*(void**)(objects[36]+0x1f8)=objects[1];
+        if(refusal==2)*(void**)(objects[36]+0xa0)=objects[1];if(refusal==3)*(void**)(objects[36]+0x20)=objects[1];
+        if(refusal==4)*(void**)(objects[35]+0xc0)=objects[1];if(refusal==5)*(void**)(objects[37]+0x1f8)=objects[1];
+        check_merchant_detail(60);
+    }
+    g_comp_w=2400;g_comp_h=1080;
+    puts("PASS: actual merchant45-degree detail view only states4/12/14 at16:9 or wider; all18 states across6 aspects and both owned top routes;24 guards plus6 weak-owner refusals,20 stable repeats, view-only writes; actual hand-ray/project round trips25 pixels per case");
 }
 static void* death_parts[2];
 static struct reload_tf death_camera(void){
@@ -816,6 +898,7 @@ int main(void){
     ready();assert(fv_console_tick(objects[0],&camera));*(void**)(objects[2]+0xc0)=objects[6];fv_console_restore();assert(!restores);
     test_camera_fov();
     test_merchant_fov();
+    test_merchant_detail();
     test_death_camera();
     test_results_camera(0);test_results_camera(1);test_results_camera(2);
     test_curved_results_camera();

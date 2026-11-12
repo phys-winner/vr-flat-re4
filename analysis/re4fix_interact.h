@@ -22,6 +22,8 @@ static int ti_ready, ti_cancel_hold, ti_face_bit = -1;
 static int (*interact_sce_hook)(void* pawn, long now);   // re4fix_sce_touch.h: levers/cranks
 static int (*interact_mirror_hook)(void* pawn,long now,int release_only);
 static void (*interact_mirror_tick)(void* hand,int gameplay,int cancelled);
+static int (*interact_key_hook)(void* pawn,long now);
+static void (*interact_key_tick)(void* hand,int gameplay,int cancelled);
 static long ti_face_until, ti_prior_face_until;
 static void* (*ti_pickup_class)(void),*(*ti_pickup_grip_class)(void),*(*ti_scene_class)(void);
 static int (*ti_collectable)(const void*);
@@ -248,6 +250,7 @@ static void touch_interact_tick(void* hand, int side, long now) {
     int cancelled = (__atomic_load_n(&g_touch_cancel,__ATOMIC_ACQUIRE) & 1) != 0;
     int gameplay = pawn && pawn == active && phone_type() == 1 && !rl_paused() && rl_player_valid();
     if(interact_mirror_tick)interact_mirror_tick(hand,gameplay,cancelled);
+    if(interact_key_tick)interact_key_tick(hand,gameplay,cancelled);
     if (ti_face_until && (now >= ti_face_until || cancelled || active != ti_face_pawn
         || (ti_face_hand == hand && !gameplay))) interact_clear_face();
     if (ti_hand && (active != ti_pawn || cancelled)) ti_cancel_hold = 1;
@@ -282,6 +285,7 @@ static void touch_interact_tick(void* hand, int side, long now) {
         }
         LOGF("INTERACT prompt unavailable (unsupported or already held command)"); return;
     }
+    if(interact_key_hook && interact_key_hook(pawn,now))return;
     // VR-only levers and cranks in front of the camera (re4fix_sce_touch.h) before free-hand world grips.
     if (interact_sce_hook && interact_sce_hook(pawn, now)) return;
     if(interact_mirror_hook && interact_mirror_hook(pawn,now,0))return;

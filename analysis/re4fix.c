@@ -111,6 +111,7 @@ static int touch_sce_interact(void* pawn, long now);
 static int touch_sce_tap(float x, float y, long now);
 static void touch_sce_idle_tick(void);
 static void touch_mirror_idle_tick(void);
+static void touch_key_item_idle_tick(void);
 static void touch_tutorial_tick(long now);
 static void touch_throw_idle_tick(void);
 static void touch_gamepad_log(void);
@@ -2304,6 +2305,7 @@ void hook_mhtick(void* self, float dt) {
     touch_unpause_tick(self);
     touch_sce_idle_tick();
     touch_mirror_idle_tick();
+    touch_key_item_idle_tick();
     touch_throw_idle_tick();
     gate_mhtick(self, dt);
     touch_merc_ui_tick();
@@ -2448,6 +2450,7 @@ static void* grip_find(const char* pat) {
 #include "re4fix_qte.h"
 #include "re4fix_push_objects.h"
 #include "re4fix_prompt_visual.h"
+#include "re4fix_key_touch.h"
 static void touch_prompt_visual_diag(void) {
     if(!__atomic_exchange_n(&g_prompt_visual_diag_request,0,__ATOMIC_ACQ_REL))return;
     struct prompt_visual_targets v=touch_prompt_visual_targets(1);
@@ -2786,6 +2789,7 @@ static void* devcmd_thread(void* arg) {
 #include "research/qa_watch_binding.h"
 #include "research/qa_door_entry.h"
 #include "research/qa_treasure_touch.h"
+#include "research/qa_key_item_use.h"
 #include "research/qa_user_transitions.h"
 #endif
 
@@ -2983,6 +2987,7 @@ static void* main_thread(void* arg) {
     install_touch_qte(base);
     install_touch_push_objects(base);
     install_touch_prompt_visual(base);
+    install_touch_key_touch(base);
     install_touch_controller(base);
     install_touch_weapon(base);
     install_touch_quickselect(base);

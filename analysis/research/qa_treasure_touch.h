@@ -47,6 +47,9 @@
 #ifndef RE4_QA_DIAG_MERCHANT_INVENTORY
 #define RE4_QA_DIAG_MERCHANT_INVENTORY(base,screen) ((void*(*)(const void*))((base)+0x63191f4))(screen)
 #endif
+#ifndef RE4_QA_DIAG_MERCHANT_STATE
+#define RE4_QA_DIAG_MERCHANT_STATE(base,screen) ((unsigned char(*)(const void*))((base)+0x63168dc))(screen)
+#endif
 #ifndef RE4_QA_DIAG_CASE_PLANE
 #define RE4_QA_DIAG_CASE_PLANE(base,object) ((struct inventory_drag_plane(*)(const void*))((base)+0x620dc24))(object)
 #endif
@@ -99,6 +102,7 @@ static void qa_treasure_menu_diag(void) {
     if(!RE4_QA_DIAG_BINDINGS(base)) {LOGF("QA TREASURE menu diag rejected=native_bindings");return;}
     static const struct {uintptr_t at;unsigned words[2];} checks[]={
         {0x6488adc,{0xd10183ff,0xf90023f3}},{0x63191f4,{0xf9418c00,0xd65f03c0}},
+        {0x63168dc,{0x394c5000,0xd65f03c0}},
         {0x620dc24,{0xd101c3ff,0xf9002bf3}},{0x633e52c,{0xf81d0ff5,0xa9014ff4}},
         {0x63769bc,{0xf81b0ff9,0xa9015ff8}},{0x6371fdc,{0xf81e0ff3,0xa9017bfd}},
     };
@@ -131,8 +135,10 @@ static void qa_treasure_menu_diag(void) {
         ray.origin[0],ray.origin[1],ray.origin[2],ray.direction[0],ray.direction[1],ray.direction[2]);
     void* manager=fv_ui_manager();void* top=pv_alive(manager)?fv_peek_screen(manager):0;void* screen=0;
     if(pv_alive(top) && menu_visual_layout(top,inventory_drag_screen_class(),0x3b0))screen=top;
-    else if(pv_alive(top) && menu_visual_layout(top,RE4_QA_DIAG_MERCHANT_CLASS(base),0x320))
+    else if(pv_alive(top) && menu_visual_layout(top,RE4_QA_DIAG_MERCHANT_CLASS(base),0x320)) {
+        LOGF("QA TREASURE merchant screen=%p state=%u read_only",top,(unsigned)RE4_QA_DIAG_MERCHANT_STATE(base,top));
         screen=RE4_QA_DIAG_MERCHANT_INVENTORY(base,top);
+    }
     if(!pv_alive(screen) || !menu_visual_layout(screen,inventory_drag_screen_class(),0x3b0)) {
         LOGF("QA TREASURE menu inventory rejected=active_typed_screen top=%p inventory=%p",top,screen);return;
     }

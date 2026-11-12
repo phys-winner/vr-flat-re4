@@ -22,7 +22,7 @@ static struct {
 } diag;
 static unsigned char diag_classes[7][16];
 static int diag_bindings,diag_current,diag_foreign,diag_hovered,diag_top_inventory,diag_bad_ray;
-static int diag_hover_calls,diag_ray_calls,diag_plane_calls,diag_inventory_calls,diag_enabled_calls;
+static int diag_hover_calls,diag_ray_calls,diag_plane_calls,diag_inventory_calls,diag_enabled_calls,diag_state_calls;
 static const void *diag_dead,*diag_bad_layout;
 static void* mg_seen_hand;
 static char log_text[8192];static unsigned log_used;
@@ -77,6 +77,7 @@ static void* diag_class2(void){return diag_classes[2];}static void* diag_class3(
 static void* diag_class4(void){return diag_classes[4];}static void* diag_class5(void){return diag_classes[5];}static void* diag_class6(void){return diag_classes[6];}
 static void* diag_manager(void){return diag.manager;}static void* diag_top(void* manager){assert(manager==diag.manager);return diag_top_inventory?diag.screen:diag.merchant;}
 static void* diag_inventory(uintptr_t base,const void* merchant){assert(base==(uintptr_t)image && merchant==diag.merchant);diag_inventory_calls++;return diag.screen;}
+static unsigned char diag_state(uintptr_t base,const void* merchant){assert(base==(uintptr_t)image && gt && merchant==diag.merchant);diag_state_calls++;return diag.merchant[0x314];}
 static struct inventory_drag_plane diag_plane(uintptr_t base,const void* object){
     assert(base==(uintptr_t)image && gt && (object==diag.cases[0] || object==diag.cases[1]));diag_plane_calls++;
     struct inventory_drag_plane plane={{0,0,1},15082};return plane;
@@ -120,12 +121,13 @@ static int native_scene_execute(uintptr_t base,unsigned id){
 #define RE4_QA_DIAG_BINDINGS(base) ((void)base,diag_bindings)
 #define RE4_QA_DIAG_MERCHANT_CLASS(base) ((void)base,diag_class0())
 #define RE4_QA_DIAG_MERCHANT_INVENTORY(base,screen) diag_inventory(base,screen)
+#define RE4_QA_DIAG_MERCHANT_STATE(base,screen) diag_state(base,screen)
 #define RE4_QA_DIAG_CASE_PLANE(base,object) diag_plane(base,object)
 #include "qa_treasure_touch.h"
 static void setup(unsigned room){
     memset(image,0,0xa600000);memset(ita,0,sizeof ita);memset(aev,0,sizeof aev);memset(player,0,sizeof player);memset(pickup,0,sizeof pickup);memset(enemies,0,sizeof enemies);
     gt=valid=alive=layout=collectable=1;paused=finds=collections=opens=logs=item_count=count_calls=wrong_actor=0;type=1;qa_treasure_logs=0;
-    diag_bindings=diag_current=diag_foreign=diag_hovered=diag_top_inventory=diag_bad_ray=0;diag_hover_calls=diag_ray_calls=diag_plane_calls=diag_inventory_calls=diag_enabled_calls=0;
+    diag_bindings=diag_current=diag_foreign=diag_hovered=diag_top_inventory=diag_bad_ray=0;diag_hover_calls=diag_ray_calls=diag_plane_calls=diag_inventory_calls=diag_enabled_calls=diag_state_calls=0;
     diag_dead=diag_bad_layout=mg_seen_hand=0;log_used=0;log_text[0]=0;memset(&diag,0,sizeof diag);
     merchant_present=merchant_alive=merchant_layout=merchant_owner=1;merchant_probes=0;memset(merchant_component,0,sizeof merchant_component);ptr(merchant_component+0xa0,merchant_actor);
     scene_ready=scene_schedule=1;scene_save_case=scene_entry_case=scenes=0;memset(scene_entry,0,sizeof scene_entry);memset(room_saves,0,sizeof room_saves);
@@ -147,6 +149,7 @@ static void setup(unsigned room){
         {0x6003ed8,0xd10243ff,0xa90467fa},{0x61d4050,0xb0020c68,0xf946bd08},
         {0x61d4760,0xb0020c88,0xf9446508},{0x62dd310,0xb0020448,0xf9415508},{0x621a8f8,0xa9bf7bfd,0x910003fd},
         {0x6488adc,0xd10183ff,0xf90023f3},{0x63191f4,0xf9418c00,0xd65f03c0},
+        {0x63168dc,0x394c5000,0xd65f03c0},
         {0x620dc24,0xd101c3ff,0xf9002bf3},{0x633e52c,0xf81d0ff5,0xa9014ff4},
         {0x63769bc,0xf81b0ff9,0xa9015ff8},{0x6371fdc,0xf81e0ff3,0xa9017bfd}};
     for(unsigned i=0;i<sizeof code/sizeof *code;i++){word(image+code[i].at,code[i].a);word(image+code[i].at+4,code[i].b);}
@@ -259,13 +262,13 @@ int main(void){
         }
     }
     setup_diag();unsigned char* old_diag=malloc(sizeof diag);assert(old_diag);memcpy(old_diag,&diag,sizeof diag);memcpy(original,image,0xa600000);
-    assert(qa_treasure_snapshot() && diag_hover_calls==1 && diag_ray_calls==1 && diag_plane_calls==2 && diag_inventory_calls==1 && diag_enabled_calls==1);
+    assert(qa_treasure_snapshot() && diag_hover_calls==1 && diag_ray_calls==1 && diag_plane_calls==2 && diag_inventory_calls==1 && diag_enabled_calls==1 && diag_state_calls==1);
     assert(strstr(log_text,"typed_owned_button=1 action=2 enabled=1") && strstr(log_text,"UIState=1")
         && strstr(log_text,"case=primary") && strstr(log_text,"case=secondary") && strstr(log_text,"interaction_plane=") && strstr(log_text,"ray_dot="));
     assert(!memcmp(old_diag,&diag,sizeof diag) && !memcmp(original,image,0xa600000));
     for(unsigned i=1;i<24;i++)assert(qa_treasure_snapshot());
-    assert(qa_treasure_logs==24 && diag_hover_calls==24 && diag_ray_calls==24 && diag_plane_calls==48);
-    assert(qa_treasure_snapshot() && diag_hover_calls==24 && diag_plane_calls==48); // Existing cap also caps all extra native reads.
+    assert(qa_treasure_logs==24 && diag_hover_calls==24 && diag_ray_calls==24 && diag_plane_calls==48 && diag_state_calls==24);
+    assert(qa_treasure_snapshot() && diag_hover_calls==24 && diag_plane_calls==48 && diag_state_calls==24); // Existing cap also caps all extra native reads.
     for(unsigned fail=0;fail<26;fail++){
         setup_diag();
         static const uintptr_t preimages[]={0x6488adc,0x63191f4,0x620dc24,0x633e52c,0x63769bc,0x6371fdc};
@@ -283,13 +286,21 @@ int main(void){
         else if(fail<=20)assert(diag_plane_calls==1);
         else {assert(diag_plane_calls==2);if(fail<=23)assert(!diag_enabled_calls);}
         assert(!memcmp(old_diag,&diag,sizeof diag) && !memcmp(original,image,0xa600000));
+        if(fail<=13)assert(!diag_state_calls);
     }
-    setup_diag();diag_top_inventory=1;assert(qa_treasure_snapshot() && !diag_inventory_calls && diag_plane_calls==2);
+    setup_diag();word(image+0x63168dc,0);assert(qa_treasure_snapshot() && !diag_state_calls && !diag_hover_calls && strstr(log_text,"rejected=preimage"));
+    for(unsigned state=0;state<18;state++) {
+        setup_diag();diag.merchant[0x314]=(unsigned char)state;memcpy(old_diag,&diag,sizeof diag);memcpy(original,image,0xa600000);
+        assert(qa_treasure_snapshot() && diag_state_calls==1);
+        char expected[48];snprintf(expected,sizeof expected,"state=%u read_only",state);assert(strstr(log_text,expected));
+        assert(!memcmp(old_diag,&diag,sizeof diag) && !memcmp(original,image,0xa600000));
+    }
+    setup_diag();diag_top_inventory=1;assert(qa_treasure_snapshot() && !diag_inventory_calls && !diag_state_calls && diag_plane_calls==2);
     for(unsigned context=1;context<=2;context++){
-        setup_diag();type=context;assert(qa_treasure_snapshot() && !diag_hover_calls && !diag_ray_calls && !diag_plane_calls);
+        setup_diag();type=context;assert(qa_treasure_snapshot() && !diag_hover_calls && !diag_ray_calls && !diag_plane_calls && !diag_state_calls);
     }
     free(old_diag);
     free(original);free(image);
-    puts("PASS: actual QA treasure C: pickup54/merchant17/scene45 guards, original scheduler kinds1/2, snapshot1/2/8; bounded type8 hover/ray/inventory/owned-case-plane diagnostics,26 refusal branches,24 cap, byte-identical fixture/game data; no wrapper player/inventory/plot/money writes");
+    puts("PASS: actual QA treasure C: pickup54/merchant17/scene45 guards, original scheduler kinds1/2, snapshot1/2/8; bounded type8 hover/ray/inventory/owned-case-plane diagnostics,26 refusal branches,18 merchant states plus getter preimage refusal,24 cap, byte-identical fixture/game data; no wrapper player/inventory/plot/money writes");
     return 0;
 }

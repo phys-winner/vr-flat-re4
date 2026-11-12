@@ -18,6 +18,13 @@ static int qa_user_transitions_command(const char* action) {
     else if(!strcmp(action,"treasurestate"))value=13;
     else if(!strcmp(action,"merchantintro"))value=14;
     else if(!strcmp(action,"houseintro"))value=15;
+    else if(!strcmp(action,"emblemright"))value=16;
+    else if(!strcmp(action,"emblemleft"))value=17;
+    else if(!strcmp(action,"keystate"))value=18;
+    else if(!strcmp(action,"snapdata"))value=19;
+    else if(!strcmp(action,"keyfixture"))value=20;
+    else if(!strcmp(action,"savefixture"))value=22;
+    else if(!strcmp(action,"door104"))value=21;
     else if(!strncmp(action,"room",4) && strlen(action)==7) {
         char* end=0;unsigned long room=strtoul(action+4,&end,16);
         if(end!=action+7 || !((room>=0x100 && room<=0x120) || (room>=0x200 && room<=0x22c)
@@ -91,12 +98,32 @@ static void qa_user_transitions_tick(void) {
         (void)qa_treasure_snapshot();
         return;
     }
+    if(request==18) {
+        (void)qa_key_item_snapshot();
+        return;
+    }
+    if(request==19) {
+        (void)qa_key_story_snapshot();
+        return;
+    }
     if(type!=1 || !pawn || !rl_player_valid || !rl_player_valid() || !rl_paused || rl_paused()) {
         LOGF("QA transition rejected: inactive/unready gameplay type=%u pawn=%p",type,pawn);return;
     }
     if(request==14 || request==15) {
         if(request==14)(void)qa_authored_merchant_reveal();
         else (void)qa_authored_house_entry();
+        return;
+    }
+    if(request==16 || request==17) {
+        (void)qa_authored_emblem_pickup(request==16?0xa4:0xa5);
+        return;
+    }
+    if(request==20) {
+        (void)qa_key_inventory_fixture();
+        return;
+    }
+    if(request==22) {
+        (void)qa_key_save_fixture();
         return;
     }
     if(request==5 || request==6) {
@@ -108,8 +135,8 @@ static void qa_user_transitions_tick(void) {
         (void)qa_frame_pacing_test_cap(request==7 ? 0:60);
         return;
     }
-    if(request==9 || request==10) {
-        (void)qa_authored_door(request==9 ? 0x101:0x212);
+    if(request==9 || request==10 || request==21) {
+        (void)qa_authored_door(request==9 ? 0x101:request==10 ? 0x212:0x104);
         return;
     }
     if(request==11 || request==12) {

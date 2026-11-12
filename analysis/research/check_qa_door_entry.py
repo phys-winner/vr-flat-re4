@@ -16,10 +16,14 @@ for start,end,digest in (
     (0x61563c8,0x615646c,'681c8ed0be6f8b0c7cc8cebc9ed9b794c7f3071c5d4f54950e80e4fa0c9819df'),
     (0x61532c4,0x61534b4,'729f805fec7a41cb488fbe305563821ebee3415e8f2676c840163cc510614a13'),
     (0x6382924,0x6382b98,'d8659942ac0de6924499af134e2de9801f822aefce7b53edd3010fb46c9ba375'),
+    (0x614cdb0,0x614ceb8,'56f83208882d4fc734e50fd7b4828df58a3db7d41958c28167aebbd690bb7464'),
+    (0x62f2678,0x62f27d4,'e394e46878b17b34be9d701fe0707d6daf3c56ce01117ca4b6a63da23d6e0260'),
+    (0x9d556b0,0x9d556f0,'130fab54f241e139ee6e6a1c5e3a34b175cbe94812e82e3b38737e63844afe88'),
 ):assert hashlib.sha256(native[start:end]).hexdigest()==digest
 assert struct.unpack_from('<II',native,0x6155664)==(0xb0021f68,0xf9402d08)
 assert struct.unpack_from('<II',native,0x61532c4)==(0xf81d0ff5,0xa9014ff4)
 assert struct.unpack_from('<II',native,0x6153ec0)==(0xf0021f68,0xf9402d08)
+assert struct.unpack_from('<II',native,0x614cdb0)==(0x53083c28,0x7100251f)
 clang=Path(os.environ['ANDROID_SDK_ROOT'])/'ndk/27.2.12479018/toolchains/llvm/prebuilt/windows-x86_64/bin/clang.exe'
 vc=Path(r'C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.51.36231')
 sdk=Path(r'C:/Program Files (x86)/Windows Kits/10')
@@ -44,7 +48,7 @@ environment={'__file__':str(loader),'__name__':'original_door_loader'}
 exec(compile(prefix.replace(mark,'original_external_hook='+mark),str(loader),'exec'),environment)
 u,buffers,call,base=(environment[name] for name in ('u','buffers','call','base'))
 u.hook_del(environment['original_external_hook'])
-from unicorn import UC_HOOK_CODE
+from unicorn import UC_HOOK_CODE,UC_HOOK_MEM_WRITE
 from unicorn.arm64_const import UC_ARM64_REG_X0,UC_ARM64_REG_PC,UC_ARM64_REG_LR
 def external(uc,address,size,unused):
     name=environment['names'][address];a,b,c=(uc.reg_read(UC_ARM64_REG_X0+i) for i in range(3));result=a
@@ -63,6 +67,9 @@ expected={
     0x100:(0,0x101,40,0x561f40,'2805b156415a4fd1086c01b490b5f7f8eab37b10',
            '6674d063dc2c6176ada5f43b7569f6f4f60db37a5410e823616cb5f717fdfeda',
            (0xc74bb067,0x42b52440,0x46aff88c,0x4007cf34)),
+    0x107:(0,0x104,7,0x71a1a0,'3682cadc41bdf489a773adaf14192602fc997c3f',
+           '20fde42c87f41f504311e8bd47ed013df28f65d9be5df47fdb73e930d03dd467',
+           (0x46d7a7e6,0xc290170c,0xc6d89e82,0xbf91c8a2)),
     0x211:(1,0x212,12,0x9120e0,'b81b60195d68bd05eee85d09505ca724cdd2b78c',
            '0c0fe59cd98674dc99e15a8e7bb55230feb4f7656db67ffc45e8fad1e538d10d',
            (0x457dc000,0,0x44f78000,0xbfc90fdc)),
@@ -73,6 +80,42 @@ pg=base+0xa501bd8;source_buffer=buffers+0x1900000;converted_buffer=buffers+0x191
 manager=base+0xa541b38;position=buffers+0x110000;rotation=buffers+0x111000
 assert qword(base+0x9cee030)==base+0x61532c4
 partner_slot=qword(base+0xa361e48)
+room_saves=buffers+0x1600000
+u.mem_write(base+0xa540ce8,bytes(0x100));put(base+0xa540ce8+0x30,'<Q',room_saves)
+u.mem_write(room_saves,bytes(512*0xd8))
+assert qword(base+0xa361d50)==base+0xa540ce8
+assert call(0x614cdb0,[base+0xa540ce8,0x104])==room_saves+0x360
+# EBio4FlagType and native SetBio4Flags establish the namespace independently
+# of the misleading serialized property name RoomSaveFlag.
+assert qword(base+0xa361d30)==base+0xa3f5e48
+assert qword(base+0x9d556f0+0x20)==base+0x9d556b0
+assert struct.unpack('<I',u.mem_read(base+0x9d556f0+0x28,4))[0]==4
+for index,name in enumerate(('SceAt','Key','RoomScenario','Scenario')):
+    text,value=struct.unpack('<Qq',u.mem_read(base+0x9d556b0+16*index,16))
+    assert bytes(u.mem_read(text,64)).split(b'\0',1)[0]==('EBio4FlagType::'+name).encode() and value==index
+flag_array=buffers+0x1930000;flag_row=flag_array+0x100
+put(flag_array,'<Qii',flag_row,1,1)
+for namespace in (1,2):
+    u.mem_write(pg,bytes(0x9000));put(base+0xa3f5e48,'<Q',pg);put(pg+0x5038,'<H',0x104)
+    u.mem_write(room_saves,bytes(512*0xd8));put(flag_row,'<B3xIBB2x',0xff,9,namespace,1)
+    call(0x62f2678,[0,flag_array,0xff])
+    global_word=struct.unpack('<I',u.mem_read(pg+0x5378,4))[0]
+    room_word=struct.unpack('<I',u.mem_read(room_saves+0x360+4,4))[0]
+    assert (global_word,room_word)==((0x00400000,0) if namespace==1 else (0,0x00400000))
+    assert bool(u.mem_read(pg+0x537a,1)[0]&0x40)==(namespace==1)
+    # Calibrate both write observers with actual original idempotent OR stores.
+    # Byte equality alone would miss these writes to an already set flag.
+    key_control=[];room_control=[]
+    def observe_key_control(uc,access,address,size,value,unused):
+        if address<pg+0x537c and address+size>pg+0x5378:key_control.append((address,size,value))
+    def observe_room_control(uc,access,address,size,value,unused):room_control.append((address,size,value))
+    key_hook=u.hook_add(UC_HOOK_MEM_WRITE,observe_key_control,begin=pg,end=pg+0x9000-1)
+    room_hook=u.hook_add(UC_HOOK_MEM_WRITE,observe_room_control,begin=room_saves,end=room_saves+512*0xd8-1)
+    call(0x62f2678,[0,flag_array,0xff]);u.hook_del(key_hook);u.hook_del(room_hook)
+    assert (bool(key_control),bool(room_control))==((True,False) if namespace==1 else (False,True))
+    assert struct.unpack('<I',u.mem_read(pg+0x5378,4))[0]==global_word
+    assert struct.unpack('<I',u.mem_read(room_saves+0x360+4,4))[0]==room_word
+print('PASS: original enum/SetBio4Flags: Key1 flag9 -> GLOBAL Game+5378 mask00400000 (byte537a&40); RoomScenario2 flag9 -> distinct RoomSave record+4; same-value native writes detected by both observers; neither namespace substitutes for the other',flush=True)
 for source,(id,destination,count,offset,compressed_sha1,aev_sha256,pose) in expected.items():
     name=f'VR4/Content/BIO4/St{source>>8}/r{source:03x}.das';entry=pak.entries[name]
     assert entry['method']==1 and not entry['encrypted'] and entry['hash'].hex()==compressed_sha1
@@ -101,7 +144,18 @@ for source,(id,destination,count,offset,compressed_sha1,aev_sha256,pose) in expe
     call(0x5d3a84c,[converted_buffer,16+count*0x100,source_buffer,len(aev)])
     node=converted_buffer+16+id*0x100;authored=bytes(u.mem_read(node,0x100))
     assert authored[0x38:0x3c]==bytes((3,1,id,1)) and authored[0x90:0x94]==bytes((destination>>8,destination&255,0,0))
-    assert struct.unpack_from('<4I',authored,0x80)==pose and authored[0xa0:0xa8]==bytes(8)
+    assert struct.unpack_from('<4I',authored,0x80)==pose and authored[0xa0:0xa4]==bytes(4)
+    if source==0x107:
+        # The original converter never initializes Door padding. A zero-filled
+        # host buffer hid this; require exact semantic fields, not allocator bytes.
+        u.mem_write(converted_buffer,bytes([0xa5])*(16+count*0x100))
+        call(0x5d3a84c,[converted_buffer,16+count*0x100,source_buffer,len(aev)])
+        authored=bytes(u.mem_read(node,0x100))
+        assert authored[0x90:0x94]==bytes((1,4,0,0))
+        assert authored[0x98:0xa4]==bytes(12) and authored[0xa8:0xb0]==bytes(8)
+        assert authored[0x94:0x98]==bytes([0xa5])*4 and authored[0xa4:0xa8]==bytes([0xa5])*4
+        assert authored[0xb0:]==bytes([0xa5])*0x50
+        print('PASS: original ARM64 ConvertAEV R107 AEV0: exact condition/callback/transition parameters zero; untouched 94..97/a4..a7/b0..ff retain a5 allocator contents',flush=True)
     # Original getter accepts live mixed AEV/ITA entries, including a tagged skipped node.
     item_node=buffers+0x1920000;u.mem_write(item_node,bytes(0xd0));put(item_node,'<Q',node)
     put(item_node+0x39,'<BB',3,0x80);put(node,'<Q',0xffffffff);put(manager+0xd8,'<Q',item_node)
@@ -114,20 +168,34 @@ for source,(id,destination,count,offset,compressed_sha1,aev_sha256,pose) in expe
     print(f'PASS: original ARM64 SceAtPtr {source:03x}: mixed ITA/AEV and tagged-node lookups preserve exact entry identity, no entry writes',flush=True)
     # Execute both original public APIs. The proposed wrapper uses SceAtExecute,
     # whose descriptor is the exact converted original entry, not a fabricated door.
-    for method in ('SceAtExecRoomJump','SceAtExecute'):
+    routes=[('SceAtExecRoomJump',0),('SceAtExecute',0)]
+    if source==0x107:routes.extend((('SceAtExecute',0xa5),('SceAtExecute',0xff)))
+    for method,fill in routes:
         u.mem_write(pg,bytes(0x9000));put(base+0xa3f5e48,'<Q',pg);put(pg+0x24,'<I',3);put(pg+0x5038,'<HB',source,7)
         put(pg+0x503c,'<HB',0xffff,9);put(pg+0x30,'<4f',-99999,-99999,-99999,-9);put(partner_slot,'<Q',0)
         u.mem_write(manager,bytes(0x100));put(base+0xa542058,'<Q',manager)
+        u.mem_write(room_saves,bytes([fill])*(512*0xd8));before_saves=bytes(u.mem_read(room_saves,512*0xd8));save_writes=[]
+        u.mem_write(pg+0x5378,bytes([fill])*4);before_key=bytes(u.mem_read(pg+0x5378,4));key_writes=[]
+        def record_save_write(uc,access,address,size,value,unused):save_writes.append((address-room_saves,size,value))
+        def record_key_write(uc,access,address,size,value,unused):
+            if address<pg+0x537c and address+size>pg+0x5378:key_writes.append((address-pg,size,value))
+        watch=u.hook_add(UC_HOOK_MEM_WRITE,record_save_write,begin=room_saves,end=room_saves+512*0xd8-1)
+        # Watch the whole Game span so a wider store beginning before the Key
+        # word is also caught by the overlap predicate.
+        key_watch=u.hook_add(UC_HOOK_MEM_WRITE,record_key_write,begin=pg,end=pg+0x9000-1)
         if method=='SceAtExecRoomJump':
             u.mem_write(position,struct.pack('<3I',*pose[:3]));put(rotation,'<III',0,pose[3],0)
             call(0x61563c8,[destination,position,rotation,0,0])
         else:
             u.mem_write(node,authored);put(node,'<Q',0xffffffff);put(manager,'<QQ',converted_buffer,converted_buffer+16);put(manager+0xd8,'<Q',node)
             call(0x6155664,[id])
+        u.hook_del(watch);u.hook_del(key_watch)
+        assert not save_writes and bytes(u.mem_read(room_saves,512*0xd8))==before_saves
+        assert not key_writes and bytes(u.mem_read(pg+0x5378,4))==before_key
         assert struct.unpack('<4I',u.mem_read(pg+0x30,16))==pose
         assert struct.unpack('<H',u.mem_read(pg+0x2c,2))[0]==destination and struct.unpack('<I',u.mem_read(pg+0x24,4))[0]==4
         assert struct.unpack('<HB',u.mem_read(pg+0x503c,3))==(source,7)
-        print(f'PASS: original ARM64 {method} {source:03x}/AEV{id}->{destination:03x}: exact authored next pose/yaw, previous-room metadata, transition mode4; no substituted native game calls',flush=True)
+        print(f'PASS: original ARM64 {method} {source:03x}/AEV{id}->{destination:03x}: exact authored next pose/yaw, previous-room metadata, transition mode4; all512 RoomSave records AND GLOBAL Key word Game+5378 unchanged/no writes, fill{fill:02x}; no substituted native game calls',flush=True)
     # Real native Ashley eligibility succeeds at zero separation, then its native
     # dead-partner guard refuses the doorway before any transition/pose writes.
     partner=buffers+0x120000;player=buffers+0x121000

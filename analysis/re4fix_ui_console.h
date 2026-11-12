@@ -404,8 +404,27 @@ static void fv_menu_camera_view(void* camera, void* view) {
             || !cinema_object(camera,cinema_camera_class(),0x7b8) || *(void* const*)((const char*)camera+0xa0)!=pawn
             || g_comp_h<64 || g_comp_w<g_comp_h || g_comp_w>16384 || g_comp_h>16384
             || (float)g_comp_w/g_comp_h>4.0f)return;
-        // A fixed vertical view includes the low sale grid; item hover and sorting never change the zoom.
-        float fov=2*atanf((float)g_comp_w/g_comp_h*0.57735026919f)*57.295779513f;
+        float tangent=0.57735026919f;
+        if(fv_peek_screen && g_ue4_base_cached && (float)g_comp_w/g_comp_h>=16.0f/9.0f) {
+            void* manager=fv_ui_manager();
+            void* top=pv_alive(manager)?fv_peek_screen(manager):0,*screen=top;
+            if(cinema_ui_named(top,"InventoryUIScreen_BP_C",0x3b0)) {
+                void* frame=fv_frame_owned(*(void* const*)((const char*)top+0x130),top)?fv_console_actor_parent(top):0;
+                screen=cinema_ui_named(frame,"UI_MerchantScreen_InventoryFrame_BP_C",0x3d8)
+                    && fv_frame_owned(*(void* const*)((const char*)frame+0x130),frame)
+                    && fv_object_property(frame,"Ref_InventoryUI")==top ? fv_object_property(frame,"MerchantScreen"):0;
+                if(screen && fv_console_actor_parent(frame)!=screen)screen=0;
+            }
+            static const unsigned getter[2]={0x394c5000,0xd65f03c0};
+            if(cinema_ui_named(screen,"UI_MerchantScreen_BP_C",0x320)
+                && fv_frame_owned(*(void* const*)((const char*)screen+0x130),screen)
+                && !memcmp((const void*)(g_ue4_base_cached+0x63168dc),getter,sizeof getter)) {
+                unsigned state=*((const unsigned char*)screen+0x314);
+                // Stable buy/tune-up pages need readable text; transfers and sales keep the complete low table.
+                if(state==4 || state==12 || state==14)tangent=0.41421356237f;
+            }
+        }
+        float fov=2*atanf((float)g_comp_w/g_comp_h*tangent)*57.295779513f;
         memcpy((char*)view+0x18,&fov,4);g_fov_h_deg=fov;return;
     }
     if(type==4 && fv_camera_menu.used && now>=fv_camera_menu.stamp && now-fv_camera_menu.stamp<300

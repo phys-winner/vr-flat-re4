@@ -8,6 +8,7 @@ from inspect_ui_package import package
 from check_curved_menu_bounds import original_curved_vertices,capture_header
 root=Path(__file__).resolve().parents[2]
 native=(root/'apk_decoded/lib/arm64-v8a/libUE4.so').read_bytes()
+assert struct.unpack_from('<II',native,0x63168dc)==(0x394c5000,0xd65f03c0) # Original merchant GetCurrentState: byte314, no writes.
 curve_capture=capture_header(original_curved_vertices(native))
 assert struct.unpack_from('<4I',native,0x6371bcc)==(0xd101c3ff,0xa90457f6,0xa9054ff4,0xa9067bfd)
 for address,word in ((0x6371c54,0xf94006a8),(0x6371c64,0xf90003f3),(0x6371c68,0xad408281),
@@ -112,6 +113,11 @@ root_source=(root/'analysis/re4fix.c').read_text()
 match=re.search(r'^static void head_angles_now\(float\* yaw, float\* pitch\) \{',root_source,re.M);assert match
 end=root_source.index('\n}',match.end())+2
 head_source=root_source[match.start():end]
+pointer_start=root_source.index('    } else if (touch_menu_pointer_allowed((int)node)) {')+len('    } else if (touch_menu_pointer_allowed((int)node)) {')
+pointer_end=root_source.index('    } else if ((node == 3 || node == 4)',pointer_start)
+pointer_source='static void native_pointer(float direction[3],float position[3]) { qf_t q={0,0,0,1};float pos[3]={0};\n'+root_source[pointer_start:pointer_end]+'\nfloat forward[3]={0,0,-1};q_rot(q,forward,direction);memcpy(position,pos,sizeof pos);}\n'
+world_source=(root/'analysis/re4fix_world_touch.h').read_text();projection_start=world_source.index('static int wt_project(')
+pointer_source+=world_source[projection_start:world_source.index('\n}',projection_start)+2]+'\n'
 # Preserve the exact live Merc scene topology, including both decorative capture/lighting actors.
 graph_path=Path(os.environ['RE4_QA_CAPTURE_DIR'])/'p431_merc_live_graph.json'
 assert hashlib.sha256(graph_path.read_bytes()).hexdigest()=='f667dc327d1a836a9f5aed142ec5cbe26b25e2f6ae439f2b0432169068468ac4'
@@ -150,6 +156,7 @@ for fixture in ('test_ui_actions_start.c','test_ui_console.c'):
   with tempfile.TemporaryDirectory(prefix='re4-actions-start-') as td:
     folder=Path(td);obj=folder/'test.obj';exe=folder/'test.exe'
     head_header=folder/'head.h';head_header.write_text(head_source)
+    pointer_header=folder/'pointer.h';pointer_header.write_text(pointer_source)
     curve_header=folder/'curves.h';curve_header.write_text(curve_capture)
     merc_header=folder/'merc.h';merc_header.write_text(merc_capture)
     widget_header=folder/'widget.h'
@@ -157,7 +164,7 @@ for fixture in ('test_ui_actions_start.c','test_ui_console.c'):
     assert '{0x9f77670, 0x51c}' in flat
     widget_header.write_text(flat[flat.index('static int fv_descends_from('):flat.index('static unsigned fv_screen_planes(')]
         +flat[flat.index('static struct cinema_ui_vec2 (*fv_current_draw_size)'):flat.index('#include "re4fix_ui_footer.h"')])
-    includes=['-DUI_HEAD_FRAGMENT="'+head_header.as_posix()+'"','-DUI_WIDGET_FRAGMENT="'+widget_header.as_posix()+'"','-DUI_CURVE_CAPTURE="'+curve_header.as_posix()+'"','-DUI_MERC_CAPTURE="'+merc_header.as_posix()+'"']
+    includes=['-DUI_HEAD_FRAGMENT="'+head_header.as_posix()+'"','-DUI_POINTER_FRAGMENT="'+pointer_header.as_posix()+'"','-DUI_WIDGET_FRAGMENT="'+widget_header.as_posix()+'"','-DUI_CURVE_CAPTURE="'+curve_header.as_posix()+'"','-DUI_MERC_CAPTURE="'+merc_header.as_posix()+'"']
     subprocess.run([str(clang),'--target=aarch64-linux-android23','-O2','-Werror',*includes,'-fsyntax-only',str(source)],check=True)
     subprocess.run([str(clang),'--target=x86_64-pc-windows-msvc','-O2','-Werror',
         *includes,'-isystem',str(vc/'include'),'-isystem',str(sdk/'Include/10.0.26100.0/ucrt'),'-c','-o',str(obj),str(source)],check=True)

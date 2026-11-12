@@ -255,6 +255,10 @@ for normal,position in (((-1.,0.,0.),(180.,0.,15167.)),((0.,0.,1.),(110.547,0.,1
     assert unchanged==(bytes(u.mem_read(diag_root,0x200)),bytes(u.mem_read(diag_case,0x2a8)),bytes(u.mem_read(diag_hand,0x570)))
 put(diag_merchant+0x318,'<Q',diag_inventory);before=bytes(u.mem_read(diag_merchant,0x320))
 assert call(0x63191f4,[diag_merchant])==diag_inventory and bytes(u.mem_read(diag_merchant,0x320))==before
+for state in (0,2,4,6,9,12,14,17,255):
+    put(diag_merchant+0x314,'<B',state);before=bytes(u.mem_read(diag_merchant,0x320))
+    assert call(0x63168dc,[diag_merchant])==state and bytes(u.mem_read(diag_merchant,0x320))==before
+print('PASS: original ARM64 Merchant.GetCurrentState returns its exact byte314 for9 distinct states with the entire screen unchanged',flush=True)
 print('PASS: diagnostic field identities; original ARM64 GetUIInteractionRay 24-byte indirect return and GetInteractionPlane four-float return for vertical/horizontal real transforms, Merchant.GetInventoryUIScreen; inputs byte-identical, no substituted native game calls',flush=True)
 
 # Empty initialized native interaction array models a room without a physical VR

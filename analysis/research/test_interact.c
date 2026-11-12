@@ -42,6 +42,7 @@ static long clock_now = 1000;
 static void* forced;
 static int pickup_capacity=1,pickup_wall,hover_adds,hover_removes,pickup_attempts,pickup_collects,pickup_destroy_on_press;
 static int body_calls,world_los_calls;
+static int key_calls,key_ticks,key_result,key_gameplay,key_cancelled;
 static void* get_player(const void* h) { return h == f.inactive ? f.other : f.pawn; }
 static void* get_active(void) { return active; }
 static unsigned get_type(void) { return type; }
@@ -118,6 +119,8 @@ static void ready(void) {
     ti_pickup_sample_ms=0;ti_pickup_available_ms=0;g_ngrips=0;forced=0;f_SetGripForcedHover=0;
     pickup_capacity=1;pickup_wall=hover_adds=hover_removes=pickup_attempts=pickup_collects=pickup_destroy_on_press=0;
     body_calls=world_los_calls=0;
+    interact_key_hook=0;interact_key_tick=0;
+    key_calls=key_ticks=key_result=key_gameplay=key_cancelled=0;
 }
 static void* pickup_class(void){return f.pickup_class;}static void* scene_class(void){return f.scene_class;}
 static void* pickup_grip_class(void){return f.grip_class;}
@@ -151,6 +154,13 @@ static void world_ready(void){
 }
 static void tick(void) { touch_interact_tick(f.left,0,clock_now); }
 static void request(void) { g_touch_interact_request = 1; tick(); }
+static int key_dispatch(void* pawn,long now) {
+    assert(pawn==f.pawn && now==clock_now);key_calls++;return key_result;
+}
+static void key_lifecycle(void* hand,int gameplay,int cancelled) {
+    assert(hand==f.left || hand==f.right || hand==f.inactive);
+    key_ticks++;key_gameplay=gameplay;key_cancelled=cancelled;
+}
 static void unchanged_objects(void (*operation)(void)) {
     unsigned char before[sizeof f]; memcpy(before,&f,sizeof f); operation();
     assert(!memcmp(before,&f,sizeof f));
@@ -233,6 +243,16 @@ int main(int argc,char** argv) {
 #endif
     test_read_only_grip_inspect();
     test_native_los_contract();
+    ready();interact_key_hook=key_dispatch;interact_key_tick=key_lifecycle;key_result=1;
+    unchanged_objects(request);assert(key_calls==1&&key_ticks==1&&key_gameplay&&!key_cancelled&&!presses&&!g_touch_interact_request);
+    tick();assert(key_calls==1&&key_ticks==2&&!presses);
+    ready();interact_key_hook=key_dispatch;request();assert(key_calls==1&&presses==1&&held==f.grip);
+    ready();interact_key_hook=key_dispatch;key_result=1;action=can_action=1;f.manager[0x3d9]=1;f.manager[0x3da]=7;
+    unchanged_objects(request);assert(!key_calls&&g_cmd_until[0]==1180&&!presses);
+    ready();interact_key_hook=key_dispatch;interact_key_tick=key_lifecycle;key_result=1;g_touch_cancel=1;
+    request();assert(!key_calls&&key_ticks==1&&key_gameplay&&key_cancelled&&!presses);
+    ready();interact_key_hook=key_dispatch;interact_key_tick=key_lifecycle;active=f.other;request();
+    assert(!key_calls&&key_ticks==1&&!key_gameplay&&!presses);
     ready(); g_touch_interact_request = 1;
     touch_interact_tick(0,0,clock_now); touch_interact_tick(f.right,1,clock_now);
     touch_interact_tick(f.inactive,0,clock_now); assert(g_touch_interact_request == 1 && !best_calls);
@@ -384,5 +404,6 @@ int main(int argc,char** argv) {
     puts("PASS: nearby world grip native LOS/valid-list gates, original door grab-side then CanOpenDoor/OpenDoor(.65), paired release; locked door, wall, invalid grip and foreign forced hover rejected");
     puts("PASS: explicit grip inspection preserves objects/input/hold state; native predicates for both sides, non-game context, foreign head, bad quaternion, disabled/unregistered and short-layout guards");
     puts("PASS: original view/ray-origin LOS arguments, thread/context/identity/class/layout/vtable/finite guards and unchanged native obstruction rejection");
+    puts("PASS: key hook consumes one explicit request before world grips, absent/refused hook retains native grip fallback, native face prompt priority and context/cancel lifecycle forwarding");
     return 0;
 }
